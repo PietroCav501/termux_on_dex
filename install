@@ -30,4 +30,5 @@ personalize
 
 dialog --msgbox "$f_text" 10 40
 clear
+rm install
 termux_on_dex
