@@ -50,6 +50,8 @@ personalize (){
     archive="data/wallpaper.tar.gz"
     destination_directory="/data/data/com.termux/files/usr/share/backgrounds/"
     extract_archive "$archive" "$destination_directory"
+    archive="data/wallpaper2.tar.gz"
+    extract_archive "$archive" "$destination_directory"
     archive="data/PiXflat.zip"
     destination_directory="/data/data/com.termux/files/home/.icons/"
     extract_archive "$archive" "$destination_directory"
