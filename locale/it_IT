@@ -1,0 +1,52 @@
+u_text="Aggiornamento dei repository"
+wait_title="Attendere"
+w_title="Benvenuto"
+w_text="Benvenuto nell'installazione automatica.\n\nClicca su 'Avanti' per iniziare l'installazione."
+s_text="Seleziona il software da installare:"
+undo="Annulla"
+next="Avanti"
+aborted="Installazione annullata."
+i_title="Informazioni della distribuzione"
+p_text="Installazione in corso di"
+wait="Installazione in corso, per favore attendi..."
+st_text="Fase preliminare"
+f_text="Installazione completata!"
+info="._..._......._......
+|.\.|.|.....(_).....
+|..\|.|.___.._._.__.
+|.....|/._.\|.|.'__|
+|.|\..|.(_).|.|.|...
+|_|.\_|\___/|_|_|...
+....PietroCav501....
+
+TermuxOnDex
+
+Utilizzo di questa pagina:
+
+- Usa le frecce per scorrere il testo
+- Premi INVIO per chiudere questa finestra
+
+PANORAMICA DELLA DISTRIBUZIONE
+Stai per installare un ambiente Linux all'interno di Termux, un'applicazione Android che fornisce un emulatore di terminale e un ambiente Linux leggero. Questa distribuzione Linux funziona nativamente all'interno di Termux e utilizza l'architettura aarch64, compatibile con i processori ARM a 64 bit, comunemente presenti nei dispositivi mobili.
+
+SOTTOSISTEMA PROOT
+Durante l'installazione, verrà incluso anche un sottosistema chiamato proot. Questo strumento è essenziale per avviare le applicazioni arm64 su un dispositivo Android senza richiedere privilegi di root. Il proot consente di eseguire software in un ambiente chroot-like, permettendo l'isolamento delle applicazioni e facilitando la compatibilità con vari pacchetti software.
+
+INSTALLAZIONE SOFTWARE
+Per installare software all'interno del sistema, puoi utilizzare il gestore di pacchetti pkg o apt.
+
+Per installare software all'interno dell'ambiente proot, puoi utilizzare il gestore di pacchetti apt-get, proprio come faresti in una distribuzione Debian o Ubuntu. Quando esegui il comando apt-get, il sistema proot automaticamente gestisce l'installazione e l'integrazione del software nel tuo ambiente Termux.
+
+Esempio di comando:
+apt-get install nome_del_pacchetto
+
+LIMITAZIONI E CONSIDERAZIONI
+- Architettura aarch64: Poiché l'ambiente è basato su architettura aarch64, non tutti i software disponibili per altre architetture (come x86_64) saranno compatibili o disponibili.
+
+- Prestazioni e Risorse: Essendo Termux un'applicazione Android, le risorse disponibili (CPU, RAM) sono limitate rispetto a un tradizionale ambiente desktop o server Linux. Pertanto, l'esecuzione di applicazioni particolarmente esigenti in termini di risorse potrebbe non essere ottimale.
+
+- Sicurezza e Isolamento: Il proot offre un certo grado di isolamento, ma non fornisce la stessa sicurezza di un vero e proprio ambiente chroot o di container come Docker. Usare il proot su un dispositivo personale comporta alcuni rischi, specialmente se si installano pacchetti da fonti non verificate.
+
+CONCLUSIONI
+L'installazione di una distribuzione Linux all'interno di Termux, completata con il supporto del sottosistema proot, offre una flessibilità notevole per eseguire software Linux su dispositivi Android. Tuttavia, è importante essere consapevoli delle limitazioni e dei requisiti di compatibilità associati con questa configurazione. Utilizzare apt-get per gestire i pacchetti rende l'esperienza familiare a chiunque abbia esperienza con sistemi Debian-based, rendendo Termux una potente estensione del terminale sul tuo dispositivo mobile.
+"

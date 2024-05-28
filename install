@@ -1,0 +1,33 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+source ./scripts/progress.sh
+source ./scripts/info.sh
+source ./scripts/welcome.sh
+source ./scripts/select.sh
+source ./scripts/install_proot.sh
+source ./scripts/starter.sh
+source ./scripts/personalize.sh
+
+locale="it_IT"
+if [ $locale == "it_IT" ]; then
+	source ./locale/it_IT
+else
+	source ./locale/en_EN
+fi
+
+clear
+termux-change-repo
+dialog --title "$wait_title" --infobox "$u_text" 10 40
+pkg update -y -o Dpkg::Options::="--force-confold" &> output.log
+termux-setup-storage -y
+show_welcome
+show_info
+select_software
+show_progress
+show_prot_progress
+create_starter
+personalize
+
+dialog --msgbox "$f_text" 10 40
+clear
+termux_on_dex
