@@ -1,5 +1,52 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
+#!/bin/bash
+
+# Funzione per mostrare un messaggio di attesa
+show_wait_message() {
+  dialog --infobox "Attendere, configurazione in corso..." 5 40
+}
+
+# Funzione per scaricare i file
+download_files() {
+  # Creazione delle directory
+  mkdir -p scripts data locale
+
+  # Scarica i file nella directory 'scripts'
+  cd scripts
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/scripts/info.sh &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/scripts/install_proot.sh &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/scripts/personalize.sh &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/scripts/progress.sh &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/scripts/select.sh &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/scripts/starter.sh &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/scripts/welcome.sh &> output.log
+
+  # Scarica i file nella directory 'locale'
+  cd ../locale
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/locale/en_EN &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/locale/it_IT &> output.log
+
+  # Scarica i file nella directory 'data'
+  cd ../data
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/PiXflat.zip &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/PiXflat2.zip &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/Windows-10-3.2.1.zip &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/wallpaper.tar.gz &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/wallpaper2.tar.gz &> output.log
+  wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/xfce4.zip &> output.log
+
+  # Torna alla directory principale e cancella tutte le directory create
+  cd ..
+  #rm -rf scripts data locale
+}
+
+# Mostra il messaggio di attesa in background e esegue i download
+show_wait_message &
+WAIT_PID=$!
+download_files
+kill $WAIT_PID
+
 source ./scripts/progress.sh
 source ./scripts/info.sh
 source ./scripts/welcome.sh
