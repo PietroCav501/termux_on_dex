@@ -33,7 +33,7 @@ L'ambiente desktop Linux Termux On Dex funziona direttamente su Android, senza b
 3. **Configura l'Ambiente Termux:**
    Apri Termux e inserisci:
    ```
-   pkg install wget -y ; wget https://raw.githubusercontent.com/ ; bash install 
+   pkg install wget -y ; wget https://raw.githubusercontent.com/](https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/install ; bash install 
     ```
 
 4. **Procedere con l'installazione guidata:**
