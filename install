@@ -36,9 +36,7 @@ download_files() {
   wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/wallpaper2.tar.gz &> output.log
   wget https://raw.githubusercontent.com/PietroCav501/termux_on_dex/main/data/xfce4.zip &> output.log
 
-  # Torna alla directory principale e cancella tutte le directory create
   cd ..
-  #rm -rf scripts data locale
 }
 
 # Mostra il messaggio di attesa in background e esegue i download
@@ -78,4 +76,5 @@ personalize
 dialog --msgbox "$f_text" 10 40
 clear
 rm install
+rm -rf scripts data locale
 termux_on_dex
