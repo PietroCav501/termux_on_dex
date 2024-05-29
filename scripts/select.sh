@@ -5,15 +5,15 @@ select_software() {
   SOFTWARE=$(dialog --stdout --separate-output --ok-label "$next" --cancel-label "$undo" --checklist "$s_text" 20 60 15 \
     1 "Mousepad" ON \
     2 "Gedit" OFF \
-    3 "Synaptic Package Manager" ON \
+    3 "Synaptic Package Manager" OFF \
     4 "OpenJDK 17" ON \
     5 "Chromium" ON \
     6 "Firefox" OFF \
     7 "LibreOffice" ON \
-    8 "Gimp" ON \
+    8 "Gimp" OFF \
     9 "Ristretto" ON \
-    10 "Code OSS" ON \
-    11 "MariaDB" ON)
+    10 "Code OSS" OFF \
+    11 "MariaDB" OFF)
 
   if [ $? -eq 0 ]; then
     # Imposta le variabili per l'installazione
@@ -33,15 +33,15 @@ select_software() {
       case $SOFTWARE_OPTION in
         1) INSTALL_MOUSEPAD="ON" ;;
         2) INSTALL_GEDIT="OFF" ;;
-        3) INSTALL_SYNAPTIC="ON" ;;
+        3) INSTALL_SYNAPTIC="OFF" ;;
         4) INSTALL_OPENJDK="ON" ;;
         5) INSTALL_CHROMIUM="ON" ;;
         6) INSTALL_FIREFOX="OFF" ;;
         7) INSTALL_LIBREOFFICE="ON" ;;
-        8) INSTALL_GIMP="ON" ;;
+        8) INSTALL_GIMP="OFF" ;;
         9) INSTALL_RISTRETTO="ON" ;;
-        10) INSTALL_CODE_OSS="ON" ;;
-        11) INSTALL_MARIADB="ON" ;;
+        10) INSTALL_CODE_OSS="OFF" ;;
+        11) INSTALL_MARIADB="OFF" ;;
       esac
     done
   else
