@@ -39,7 +39,7 @@ L'ambiente desktop Linux Termux On Dex funziona direttamente su Android, senza b
 4. **Procedere con l'installazione guidata:**
 
 Guida all'installazione 
-https://youtu.be/7LcWAeCqqDE?feature=shared
+https://www.youtube.com/watch?v=7LcWAeCqqDE
     
 ## Utilizzo
 Apri l'app Termux e inserisci 
