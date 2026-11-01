@@ -13,6 +13,8 @@ It's still an alpha. I've tested it on a Galaxy S26 Ultra (Snapdragon, Adreno GP
 Galaxy S20+ (Exynos, Mali GPU); it should work on any 64-bit Android 8 or later. If
 something doesn't work, open an issue and attach the file that `tod doctor` creates.
 
+![The desktop with the Start menu](docs/screenshots/start-menu.jpg)
+
 The installer and the project's own windows are in English, or in Italian on a phone set
 to Italian. XFCE and the apps follow the phone's language.
 
@@ -58,6 +60,10 @@ process restrictions" in Developer options.
 - The phone's Android apps in the Start menu, opening in a DeX window.
 - Phone battery, network and notifications in the taskbar (with Termux:API).
 - Firefox and LibreOffice.
+
+![File manager with the phone's folders, and Settings](docs/screenshots/files-settings.jpg)
+
+![GIMP and Chromium on the desktop](docs/screenshots/apps.jpg)
 
 XFCE runs directly in Termux. Debian apps start without proot when they can: Debian's
 loader, patched for Android, together with [fakechroot](https://github.com/dex4er/fakechroot)

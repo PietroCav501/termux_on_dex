@@ -13,6 +13,8 @@ Samsung, che non esiste più.
 Galaxy S20+ (Exynos, GPU Mali); dovrebbe andare su qualsiasi Android 8 o successivo a 64 bit.
 Se qualcosa non funziona apri una issue e allega il file che crea `tod doctor`.
 
+![Il desktop con il menu Start](docs/screenshots/start-menu.jpg)
+
 ## Installazione
 
 Serve Termux scaricato da [GitHub](https://github.com/termux/termux-app/releases) (il file
@@ -54,6 +56,10 @@ Opzioni sviluppatore.
 - Le app Android installate nello Start, che si aprono in una finestra di DeX.
 - Batteria, rete e notifiche del telefono nella barra (con Termux:API).
 - Desktop in italiano, Firefox e LibreOffice.
+
+![Esplora file con le cartelle del telefono e le Impostazioni](docs/screenshots/files-settings.jpg)
+
+![GIMP e Chromium aperti nel desktop](docs/screenshots/apps.jpg)
 
 XFCE gira direttamente in Termux. Le app di Debian, quando possibile, partono senza proot:
 il caricatore di Debian corretto per Android e [fakechroot](https://github.com/dex4er/fakechroot)
