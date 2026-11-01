@@ -22,6 +22,8 @@ LKLBIN="$DATA/tod-lkl"
 mkdir -p "$STATE" "$RUN"
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
 notify() { command -v notify-send >/dev/null && notify-send -i drive-removable-media "$1" "$2" || true; }
+# testi per l'utente nella lingua del desktop (come le finestre in Python): italiano o inglese
+msg() { if [[ ${LANGUAGE:-${LANG:-}} == it* ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
 # "Scheda SD" -> "scheda-sd": il nome dei canali di tod-lkl ($RUN/lkl-<alias>.sock) senza spazi né lettere
 # accentate ("UNITÀ USB" -> "unit---usb"). Byte per byte, come tod-volumi.py, tod-gettext.c, tod-lkl.c, tod-fs.c
 alias_of() { printf '%s' "$1" | LC_ALL=C tr ' /A-Z' '-_a-z' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g'; }
@@ -106,7 +108,7 @@ espelli() { # smonta in sicurezza la partizione NOME. Il disco non torna ad Andr
   printf 'espelli %s\n' "$name" | timeout 30 ncat -U "$RUN/lkl-$id.ctl" >/dev/null 2>&1 || true
   rm -f "$RUN/vol-$(alias_of "$name")"
   log "espulso $name"
-  notify "$name" "Puoi scollegare il disco."
+  notify "$name" "$(msg "Puoi scollegare il disco." "You can unplug the drive.")"
 }
 
 monitor() { # i dischi in Esplora file come unità e volumi (tod-volumi.py): GIO lo trova da questi due file
@@ -223,7 +225,7 @@ voci() { # VOLS: le partizioni sono già cartelle in /media/usb (tod-fs.so) e Es
     [[ -f $RUN/vol-$a ]] && continue
     echo "$name" >"$RUN/vol-$a"; log "in Esplora file: $name (/media/usb)"
     if [[ -z $aperta ]] && ! { [[ -f $RUN/dischi-lkl.pid ]] && kill -0 "$(cat "$RUN/dischi-lkl.pid")" 2>/dev/null; }; then
-      aperta=1; notify "$name" "Pronta: la trovi in Esplora file."
+      aperta=1; notify "$name" "$(msg "Pronta: la trovi in Esplora file." "Ready: it's in the file manager.")"
       (exo-open --launch FileManager "/media/usb/$name" >/dev/null 2>&1 &)
     fi
   done <<<"$vols"

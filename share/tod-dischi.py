@@ -80,6 +80,10 @@ def misura(b):
         b /= 1000
 
 
+def tipo_testo(tipo):   # "Chiavetta USB" e "Scheda SD" sono nomi interni (tod-lkl, icone): da mostrare tradotti
+    return {"Chiavetta USB": T("Chiavetta USB", "USB stick"), "Scheda SD": T("Scheda SD", "SD card")}.get(tipo, tipo)
+
+
 # --- i dischi, dai file di tod-lkl ---------------------------------------------------------
 def leggi_dischi():
     ids = []
@@ -223,8 +227,8 @@ class Dischi(Gtk.Window):
             icona = "media-flash" if d["tipo"] == "Scheda SD" else "drive-removable-media"
             h.pack_start(Gtk.Image.new_from_icon_name(icona, Gtk.IconSize.DND), False, False, 0)
             v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, valign=Gtk.Align.CENTER)
-            v.pack_start(Gtk.Label(label=d["prodotto"] or d["tipo"], xalign=0, ellipsize=3), False, False, 0)
-            sub = Gtk.Label(label=f"{misura(d['byte'])} · {d['tipo']}", xalign=0)
+            v.pack_start(Gtk.Label(label=d["prodotto"] or tipo_testo(d["tipo"]), xalign=0, ellipsize=3), False, False, 0)
+            sub = Gtk.Label(label=f"{misura(d['byte'])} · {tipo_testo(d['tipo'])}", xalign=0)
             sub.get_style_context().add_class("hint")
             v.pack_start(sub, False, False, 0)
             h.pack_start(v, True, True, 0)
@@ -279,11 +283,11 @@ class Dischi(Gtk.Window):
         icona = "media-flash" if d["tipo"] == "Scheda SD" else "drive-removable-media"
         top.pack_start(Gtk.Image.new_from_icon_name(icona, Gtk.IconSize.DIALOG), False, False, 0)
         v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, valign=Gtk.Align.CENTER)
-        t = Gtk.Label(label=d["prodotto"] or d["tipo"], xalign=0, ellipsize=3)
+        t = Gtk.Label(label=d["prodotto"] or tipo_testo(d["tipo"]), xalign=0, ellipsize=3)
         t.get_style_context().add_class("pane-title")
         v.pack_start(t, False, False, 0)
         tab = {"dos": T("tabella MBR", "MBR table"), "gpt": T("tabella GPT", "GPT table")}.get(d["tabella"], T("senza tabella delle partizioni", "no partition table"))
-        s = Gtk.Label(label=f"{d['tipo']} · {misura(d['byte'])} · {tab} · {d['dev']}", xalign=0)
+        s = Gtk.Label(label=f"{tipo_testo(d['tipo'])} · {misura(d['byte'])} · {tab} · {d['dev']}", xalign=0)
         s.get_style_context().add_class("hint")
         v.pack_start(s, False, False, 0)
         if d["ro"]:   # levetta della scheda, o chiavetta consumata che si è bloccata da sola

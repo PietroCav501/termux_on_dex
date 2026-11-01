@@ -1582,6 +1582,22 @@ EOF
   has "partizione, spazio usato e libero dopo (allineato a 1 MiB)" "/dev/sdb1 (100000000, 399000000) [(401604608, 597)]" "$out"
   has "senza tabella: niente spazio libero da usare" "[] 1,5 GB" "$out"
   has "Dischi è il nostro" "tod-dischi.py" "$(sed -n '/^dischi() {/,/^}/p' "$ROOT/share/usb/tod-usb")"
+  # 1° novembre: con il desktop in inglese la finestra mostrava "Chiavetta USB" (nome interno di tod-lkl)
+  out=$(LANGUAGE=en LANG=en_US.UTF-8 python3 - "$ROOT/share/tod-dischi.py" <<'EOF'
+import importlib.util as u, sys
+s = u.spec_from_file_location("d", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.tipo_testo("Chiavetta USB"), "|", m.tipo_testo("Scheda SD"), "|", m.tipo_testo("altro"))
+EOF
+)
+  eq "tipo del disco tradotto in inglese" "USB stick | SD card | altro" "$out"
+}
+
+test_usb_notifiche_lingua() { # 1° novembre: le notifiche del servizio dei dischi erano solo in italiano
+  eval "$(sed -n '/^msg() {/p' "$ROOT/share/usb/tod-usb")"
+  eq "notifica in inglese" "You can unplug the drive." "$(LANGUAGE=en msg "Puoi scollegare il disco." "You can unplug the drive.")"
+  eq "notifica in italiano" "Puoi scollegare il disco." "$(LANGUAGE=it_IT msg "Puoi scollegare il disco." "You can unplug the drive.")"
+  eq "senza lingua: inglese" "B" "$(LANGUAGE='' LANG='' msg A B)"
+  hasnt "nessuna notifica con il testo scritto fisso" 'notify "$name" "P' "$(cat "$ROOT/share/usb/tod-usb")"
 }
 
 test_usb_porte_senza_java() { # termux-usb -l (Java) solo quando l'elenco di /sys cambia, o ogni 60 s
