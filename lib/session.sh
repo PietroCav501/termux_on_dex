@@ -183,26 +183,39 @@ session_start() {
   if have setsid; then launch=(setsid nohup); fi
   # X11_GLAMOR=1: composizione X con la GPU nel server (serve la Termux:X11 con glamor, ~/src/x11-build);
   # X11_MISURA=1: il server scrive ogni 5 s nel logcat (LorieNative) quanto costa ogni tipo di richiesta
-  local glamor misura
-  glamor=$(conf_get X11_GLAMOR 0)
+  local glamor=0 misura
+  if x11_glamor_ok; then glamor=1; fi
   misura=$(conf_get X11_MISURA 0)
   local try started=0
-  for try in 1 2; do
+  for try in 1 2 3; do
     # azzerato e poi aperto in coda (>>): così session_log_cap può accorciarlo mentre il server scrive
     : >"$TOD_STATE_DIR/session.log"
     XDG_RUNTIME_DIR=$TMPDIR TERMUX_X11_GLAMOR=$glamor TERMUX_X11_MISURA=$misura \
       "${launch[@]}" termux-x11 "${args[@]}" >>"$TOD_STATE_DIR/session.log" 2>&1 </dev/null &
-    if x11_wait_socket "${TOD_X11_WAIT:-30}"; then started=1; break; fi
-    # l'output del server finisce nel log: è quello che serve per capire il perché
-    log "sessione: avvio $try/2 fallito. Server X: $(tail -n 15 "$TOD_STATE_DIR/session.log" 2>/dev/null | tr '\n' ' ')"
+    if x11_wait_socket "${TOD_X11_WAIT:-30}"; then
+      x11_open_activity
+      # con glamor il server usa la GPU quando la finestra si apre: deve restare acceso
+      if (( ! glamor )) || x11_resta_vivo "${TOD_X11_VIVO:-4}"; then started=1; break; fi
+      log "sessione: la Termux:X11 con glamor si è chiusa appena aperta. Server X: $(tail -n 15 "$TOD_STATE_DIR/session.log" 2>/dev/null | tr '\n' ' ')"
+    else
+      # l'output del server finisce nel log: è quello che serve per capire il perché
+      log "sessione: avvio $try fallito. Server X: $(tail -n 15 "$TOD_STATE_DIR/session.log" 2>/dev/null | tr '\n' ' ')"
+    fi
     x11_kill
+    if (( glamor )); then
+      # questo telefono non regge glamor: si riparte senza, e così per sempre (X11_GLAMOR_NO)
+      glamor=0
+      conf_set X11_GLAMOR_NO 1
+      warn "$(t x11_glamor_off)"
+    elif (( try >= 2 )); then
+      break
+    fi
   done
   if (( ! started )); then
     err "$(t x11_no_socket)"
     tail -n 20 "$TOD_STATE_DIR/session.log" >&2 || true
     return 1
   fi
-  x11_open_activity
   if [[ $(x11_uid_status) == separate ]]; then warn "$(t x11_shared_warn)"; fi
   if [[ $(conf_get X11_PREFS_APPLIED) != "$TOD_VERSION" ]]; then
     sleep 2
@@ -249,7 +262,16 @@ session_xstartup() { # eseguito da termux-x11 al posto del classico -xstartup "x
   export PULSE_SERVER
   PULSE_SERVER=$(audio_socket)
   log "xstartup: $de ($cmd) profilo=${TOD_GPU_PROFILE:-?} lingua=${TOD_GETTEXT_LANG:-en}"
+  local srv ora
+  srv=$(x11_server_pids | sort | tr '\n' ' ')
   dbus-launch --exit-with-session "$cmd" || true
+  # il server X di questa sessione si è chiuso da solo e ne è già partito un altro (session_start riparte
+  # senza glamor): l'arresto spegnerebbe quello nuovo
+  ora=$(x11_server_pids | sort | tr '\n' ' ')
+  if [[ -n ${ora// /} && $ora != "$srv" ]]; then
+    log "sessione chiusa, ma il server X è un altro: niente arresto"
+    return 0
+  fi
   # "Esci" dal menu: si spegne tutto come un PC (audio, server X, finestra) e si torna ad Android.
   # Staccato, perché il server X di cui siamo figli sta per chiudersi.
   log "sessione chiusa dal desktop: arresto completo"

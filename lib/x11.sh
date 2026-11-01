@@ -167,6 +167,23 @@ x11_app_download() { # x11_app_download [shareduid|regular]
   return 0
 }
 
+x11_glamor_ok() { # glamor (composizione con la GPU nel server X): la nostra Termux:X11, e solo dove è provato
+  # (Adreno). 1° novembre, S20+ (Mali): con glamor la Termux:X11 si chiudeva appena aperta. X11_GLAMOR_NO=1: su
+  # questo telefono si è chiusa all'avvio (session_start), quindi mai più
+  [[ $(conf_get X11_GLAMOR 0) == 1 && $(conf_get X11_GLAMOR_NO 0) != 1 ]] || return 1
+  if [[ -z ${GPU_FAMILY:-} ]]; then detect_gpu; fi
+  [[ ${GPU_FAMILY:-} == adreno ]]
+}
+
+x11_resta_vivo() { # x11_resta_vivo secondi: il server X è ancora acceso dopo un po' (glamor parte con la finestra)
+  local i
+  for ((i = 0; i < ${1:-4} * 4; i++)); do
+    sleep 0.25
+    x11_running || return 1
+  done
+  return 0
+}
+
 x11_glamor_da_aggiornare() { # c'è una Termux:X11 di Termux On DeX più nuova di quella installata?
   # (le installazioni da prima del 1° novembre non hanno il numero: avevano la 1)
   [[ $(conf_get X11_GLAMOR 0) == 1 && $(conf_get X11_GLAMOR_INSTALLATA 1) != "$X11_GLAMOR_VERSIONE" ]]

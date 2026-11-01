@@ -258,7 +258,7 @@ gpu_glitchy() { # gpu_glitchy profilo → vero se sporca il desktop su questa GP
 # diretta (DRI3) di zink-turnip è pulita anche con Chromium ed Electron (30 ottobre, Adreno 840: nessun
 # blocco nero né fotogramma rovinato con menu e popup) ed è molto più fluida della copia software
 # (mirino di CADCraft: 42 → 92 aggiornamenti al secondo, ritardo 33 → 17 ms). kgsl non è stato riprovato.
-gpu_glamor() { [[ $(conf_get X11_GLAMOR 0) == 1 ]]; }
+gpu_glamor() { x11_glamor_ok; }   # la composizione con la GPU nel server X è davvero accesa
 
 gpu_rank() { # posizione nella preferenza per il desktop (più basso = meglio)
   if gpu_glitchy "$1"; then

@@ -3653,6 +3653,68 @@ test_lingua_ripara() { # la traduzione mancante si installa da sola all'avvio de
   has "chiamata dall'hook della sessione" "lingua_ripara" "$(sed -n '/^session_hook() {/,/^}/p' "$ROOT/lib/session.sh")"
 }
 
+test_x11_glamor_solo_adreno() { # 1° novembre: sul S20+ (Mali) la Termux:X11 con glamor si chiudeva appena aperta
+  conf_set X11_GLAMOR 1
+  local GPU_FAMILY=adreno
+  x11_glamor_ok || { echo "  ✘ Adreno: glamor acceso"; return 1; }
+  GPU_FAMILY=mali
+  fails x11_glamor_ok
+  GPU_FAMILY=xclipse
+  fails x11_glamor_ok
+  GPU_FAMILY=adreno
+  conf_set X11_GLAMOR_NO 1
+  fails x11_glamor_ok
+  conf_set X11_GLAMOR_NO 0
+  conf_set X11_GLAMOR 0
+  fails x11_glamor_ok
+}
+
+test_session_start_glamor_ripiego() { # Termux:X11 con glamor che si chiude subito: si riparte senza, per sempre
+  command -v python3 >/dev/null || { echo "  (python3 assente: salto)"; return 0; }
+  cat >"$PREFIX/bin/termux-x11" <<'EOF'
+#!/bin/bash
+echo "${TERMUX_X11_GLAMOR:-?}" >>"$HOME/x11_glamor"
+exec -a app_process python3 -c '
+import os, socket, time
+d = os.environ["TMPDIR"] + "/.X11-unix"; os.makedirs(d, exist_ok=True)
+p = d + "/X0"
+if os.path.exists(p): os.unlink(p)
+s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(1)
+time.sleep(1 if os.environ.get("TERMUX_X11_GLAMOR") == "1" else 30)' com.termux.x11.CmdEntryPoint "$@"
+EOF
+  printf '#!/bin/sh\nexit 0\n' >"$PREFIX/bin/am"
+  printf '#!/bin/sh\nexit 0\n' >"$PREFIX/bin/termux-x11-preference"
+  chmod +x "$PREFIX/bin/termux-x11" "$PREFIX/bin/am" "$PREFIX/bin/termux-x11-preference"
+  PATH="$PREFIX/bin:$PATH"
+  TOD_X11_WAIT=3 TOD_X11_SETTLE=0 TOD_X11_VIVO=2
+  local GPU_FAMILY=adreno
+  conf_set INSTALLED 1
+  conf_set X11_GLAMOR 1
+  session_start >/dev/null 2>&1
+  x11_running || { echo "  ✘ il desktop deve partire senza glamor"; return 1; }
+  eq "prima con glamor, poi senza" "1 0" "$(tr '\n' ' ' <"$HOME/x11_glamor" | sed 's/ $//')"
+  eq "ricordato per questo telefono" 1 "$(conf_get X11_GLAMOR_NO)"
+  has "nel registro il perché" "si è chiusa appena aperta" "$(cat "$TOD_LOG")"
+  session_stop >/dev/null 2>&1
+  fails x11_running
+  : >"$HOME/x11_glamor"
+  session_start >/dev/null 2>&1
+  eq "la volta dopo: subito senza glamor" "0" "$(cat "$HOME/x11_glamor")"
+  session_stop >/dev/null 2>&1
+}
+
+test_xstartup_server_nuovo_niente_arresto() { # la sessione del server morto non spegne quello ripartito
+  printf '#!/bin/sh\nexit 0\n' >"$PREFIX/bin/dbus-launch"
+  printf '#!/bin/sh\necho "$@" >"$HOME/tod_called"\n' >"$PREFIX/bin/tod"
+  chmod +x "$PREFIX/bin/dbus-launch" "$PREFIX/bin/tod"
+  PATH="$PREFIX/bin:$PATH"
+  x11_server_pids() { if [[ -f $HOME/srv_n ]]; then echo 222; else touch "$HOME/srv_n"; echo 111; fi; }
+  session_xstartup >/dev/null 2>&1
+  sleep 1
+  eq "server nuovo: niente arresto" "" "$(cat "$HOME/tod_called" 2>/dev/null)"
+  has "nel registro" "il server X è un altro" "$(cat "$TOD_LOG")"
+}
+
 test_logout_stops_everything() {
   # "Esci" dal menu: quando la sessione XFCE finisce, parte "tod stop" staccato
   printf '#!/bin/sh\nexit 0\n' >"$PREFIX/bin/dbus-launch"
