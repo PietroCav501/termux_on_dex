@@ -29,7 +29,7 @@ mkdir -p "$HOME" "$PREFIX/bin" "$TMPDIR"
 PATH=$(tr ':' '\n' <<<"$PATH" | grep -v '^/data/data/com\.termux/' | paste -sd:)
 # strumenti innocui che nel proot esistono solo in Termux: questi sì
 mkdir -p "$WORK/safe-bin"
-for _t in curl jq python3 sha256sum unzip zip clang; do
+for _t in curl jq python3 sha256sum unzip zip clang git; do
   if ! command -v "$_t" >/dev/null && [[ -x /data/data/com.termux/files/usr/bin/$_t ]]; then
     ln -s "/data/data/com.termux/files/usr/bin/$_t" "$WORK/safe-bin/$_t"
   fi
@@ -2407,6 +2407,7 @@ test_x11_glamor_apk() { # 30 ottobre: la Termux:X11 di Termux On DeX (glamor) al
   }
   x11_app_download shareduid
   eq "sharedUid: la nostra dalla release" 1 "$(conf_get X11_GLAMOR)"
+  eq "si ricorda quale versione" "$X11_GLAMOR_VERSIONE" "$(conf_get X11_GLAMOR_INSTALLATA)"
   has "scaricata dalla release" "releases/download/x11-glamor-$X11_GLAMOR_VERSIONE/termux-x11-glamor-shareduid.apk" "$(cat "$TOD_X11_APK")"
   eq "niente pacchetto della nightly" no "$([[ -e $TOD_X11_DEB ]] && echo si || echo no)"
   touch "$WORK/x11g_rotto_$$"
@@ -2428,6 +2429,106 @@ test_x11_glamor_apk() { # 30 ottobre: la Termux:X11 di Termux On DeX (glamor) al
   x11_app_download shareduid
   eq "copia in dist/ con l'impronta giusta: niente rete" locale "$(cat "$TOD_X11_APK")"
   eq "copia in dist/: nessuno scaricamento" "" "$(cat "$WORK/x11g_dl_$$")"
+}
+
+test_self_update_da_github() { # 1° novembre: Termux On DeX si aggiorna anche dalla finestra Aggiornamenti
+  have git || { echo "  (git assente: salto)"; return 0; }
+  local o="$WORK/self_$$/origine" out
+  local HOME="$WORK/self_$$/casa"
+  local c="$HOME/.local/share/tod"
+  g() { git -c user.name=prova -c user.email=prova@example.com "$@"; }
+  mkdir -p "$o" "$HOME/.local/share"
+  g -C "$o" init -q && g -C "$o" checkout -q -b v2
+  echo uno >"$o/tod" && chmod 644 "$o/tod"   # anche senza permesso di esecuzione nel repository
+  g -C "$o" add tod && g -C "$o" commit -q -m "primo"
+  git clone -q --depth 1 -b v2 "file://$o" "$c"   # come install.sh
+  local TOD_ROOT=$c
+  eq "appena installato: niente di nuovo" "stato=aggiornato" "$(self_check)"
+  echo due >"$o/tod" && g -C "$o" commit -qam "Barra: icona giusta"
+  echo tre >>"$o/tod" && g -C "$o" commit -qam "Dischi in inglese"
+  out=$(self_check)
+  has "novità su GitHub" "stato=nuovo" "$out"
+  has "contate" "novita=2" "$out"
+  eq "con i titoli, la più nuova prima" "titolo=Dischi in inglese" "$(sed -n '/^titolo=/{p;q}' <<<"$out")"
+  self_update
+  eq "codice nuovo" "$(git -C "$o" rev-parse HEAD)" "$(git -C "$c" rev-parse HEAD)"
+  eq "poi niente di nuovo" "stato=aggiornato" "$(self_check)"
+  # la storia riscritta su GitHub (commit unico + push --force): git pull --ff-only falliva. Qui la copia
+  # non è più "leggera" (il controllo ha scaricato tutti i commit): si riconosce dal posto
+  g -C "$o" checkout -q --orphan nuovo && g -C "$o" commit -q -m "Termux On DeX v2" && g -C "$o" branch -q -M nuovo v2
+  out=$(self_check)
+  has "storia riscritta: c'è la novità" "stato=nuovo" "$out"
+  hasnt "storia riscritta: novità non contate" "novita=" "$out"
+  self_update
+  eq "storia riscritta: aggiornato lo stesso" "$(git -C "$o" rev-parse HEAD)" "$(git -C "$c" rev-parse HEAD)"
+  # mai sopra modifiche fatte a mano
+  echo mio >>"$c/tod"
+  g -C "$o" commit -q --allow-empty -m "altro"
+  fails self_update
+  eq "modifiche fatte a mano: restano" 1 "$(grep -c mio "$c/tod")"
+  # una copia di sviluppo (clone completo altrove): solo avanti, mai allineata a forza
+  local d="$WORK/self_$$/sviluppo"
+  git clone -q -b v2 "file://$o" "$d"
+  local TOD_ROOT=$d
+  echo quattro >"$o/tod" && g -C "$o" commit -qam "avanti"
+  self_update
+  eq "sviluppo: avanti" "$(git -C "$o" rev-parse HEAD)" "$(git -C "$d" rev-parse HEAD)"
+  g -C "$o" checkout -q --orphan nuovo2 && g -C "$o" commit -q -m "riscritta" && g -C "$o" branch -q -M nuovo2 v2
+  fails self_update
+  eq "sviluppo, storia riscritta: niente reset" "avanti" "$(git -C "$d" log -1 --format=%s)"
+  # copia senza ramo su GitHub (quella di Pietro) o senza git: nessuna voce
+  local TOD_ROOT="$WORK/self_$$/locale"
+  mkdir -p "$TOD_ROOT" && git -C "$TOD_ROOT" init -q
+  eq "copia senza ramo remoto: nessuna voce" "stato=nessuno" "$(self_check)"
+  local TOD_ROOT="$WORK/self_$$/senza-git"
+  mkdir -p "$TOD_ROOT"
+  eq "senza git: nessuna voce" "stato=nessuno" "$(self_check)"
+}
+
+test_aggiornamenti_voce_tod() { # la voce "Termux On DeX" nella finestra Aggiornamenti e la sua installazione
+  local f="$WORK/upd_$$" out
+  mkdir -p "$f"
+  printf '#!/bin/sh\necho "uscita di prova"\necho x11=nuova\n' >"$f/tod-ok"
+  # gli errori di tod vanno su stderr, seguiti dal rimando al registro
+  printf '#!/bin/sh\necho "✘ errore finto" >&2\necho "  Dettagli nel registro: /x/tod.log" >&2\nexit 1\n' >"$f/tod-ko"
+  out=$(LANGUAGE=it HOME="$f" python3 - "$ROOT/share/tod-updates.py" "$f" <<'EOF'
+import importlib.util as u, sys
+s = u.spec_from_file_location("up", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.tod_item("stato=aggiornato"), m.tod_item("stato=nessuno"), m.tod_item("stato=errore"))
+it = m.tod_item("stato=nuovo\nda=aaaaaaa\na=bbbbbbb\nnovita=2\ntitolo=Barra: icona giusta\ntitolo=Dischi in inglese\n")
+print(it["app"], "|", it["desc"], "|", it["where"], it["from"], it["to"])
+print(m.tod_item("stato=nuovo\nda=a\na=b\ntitolo=Termux On DeX v2")["desc"])
+print(m.summary({"tod": [it], "termux": [{"name": "curl", "to": "1"}], "debian": []}))
+m.TOD = sys.argv[2] + "/tod-ok"
+ok, nota = m.install([it], lambda *a: None)
+print(ok, nota)
+m.TOD = sys.argv[2] + "/tod-ko"
+print(m.install([it], lambda *a: None))
+EOF
+)
+  eq "niente di nuovo: nessuna voce" "None None None" "$(sed -n 1p <<<"$out")"
+  eq "la voce: nome, novità e la modifica più nuova" "Termux On DeX | 2 novità · Barra: icona giusta | tod aaaaaaa bbbbbbb" "$(sed -n 2p <<<"$out")"
+  eq "storia riscritta: nuova versione" "Nuova versione · Termux On DeX v2" "$(sed -n 3p <<<"$out")"
+  eq "nel riassunto per prima" "Termux On DeX e un altro aggiornamento" "$(sed -n 4p <<<"$out")"
+  has "installata dalla finestra: cosa cambia e quando" "True Termux On DeX è aggiornato: barra, Start e finestre cambiano al prossimo avvio" "$(sed -n 5p <<<"$out")"
+  has "Termux:X11 nuova: da Termux, non da qui" "installala da Termux con tod update" "$(sed -n 5p <<<"$out")"
+  eq "errore: l'ultima riga di tod" "(False, 'errore finto')" "$(sed -n 6p <<<"$out")"
+  has "la finestra chiama tod" '"_self_update"' "$(cat "$ROOT/share/tod-updates.py")"
+}
+
+test_x11_glamor_nuova_versione() { # la Termux:X11 nuova si propone solo da tod update (installarla chiude Termux)
+  conf_set X11_GLAMOR 1
+  if x11_glamor_da_aggiornare; then echo "  ✘ installazione di prima del 1° novembre (versione 1): niente da fare"; return 1; fi
+  local X11_GLAMOR_VERSIONE=2
+  x11_glamor_da_aggiornare || { echo "  ✘ versione 2 uscita: da aggiornare"; return 1; }
+  usb_on() { return 1; }
+  desktop_install_entries() { :; }
+  eq "dopo il codice nuovo: avviso per la finestra" "x11=nuova" "$(self_after)"
+  conf_set X11_GLAMOR_INSTALLATA 2
+  eq "già la nuova: niente" "" "$(self_after)"
+  conf_set X11_GLAMOR 0
+  conf_set X11_GLAMOR_INSTALLATA 1
+  eq "con la Termux:X11 ufficiale: mai" "" "$(self_after)"
 }
 
 test_install_sh_full_upgrade_first() { # 31 ottobre: "CANNOT LINK EXECUTABLE" su un Termux appena installato

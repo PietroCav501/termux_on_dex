@@ -15,7 +15,8 @@ PREDICATES = {
     "step_done", "ui_has_dialog", "x11_running", "sha256_ok", "gpu_vk_ok",
     "phantom_verify", "virgl_running", "virgl_start", "cx_installed", "x11_app_installed",
     "pkg_installed", "pkg_has", "session_running", "have", "ui_yesno", "tui_available", "lingua_active", "phantom_verify_default",
-    "bv_wanted", "bv_alive", "usb_bg_running", "tui_quiet", "app_rx",
+    "bv_wanted", "bv_alive", "usb_bg_running", "tui_quiet", "app_rx", "x11_glamor_da_aggiornare",
+    "self_is_install",
 }
 
 func_re = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)\(\)\s*\{")

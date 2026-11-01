@@ -72,7 +72,7 @@ tod_main() {
         tod_doctor
       fi
       ;;
-    update) tod_update ;;
+    update) tod_update "$@" ;;
     uninstall) tod_uninstall ;;
     version | -V | --version) echo "Termux On DeX $TOD_VERSION" ;;
     help | -h | --help | "?" | aiuto) tod_help ;;
@@ -81,6 +81,9 @@ tod_main() {
     _preseed) session_preseed_inner ;;
     _dev_adb) dev_adb_reconnect ;;
     _deb_check) deb_check "$1" ;;
+    _self_check) self_check "$@" ;;
+    _self_update) self_update_cli ;;
+    _self_after) self_after ;;
     _deb_install) detect_gpu; deb_install "$1" ;;
     _app_piano) app_piano "$@" ;;
     _app_rimuovi) app_rimuovi "$@" ;;

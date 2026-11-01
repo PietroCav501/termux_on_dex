@@ -295,6 +295,9 @@ declare -gA TOD_MSG_it=(
 
   [up_self]="Aggiornamento di Termux On DeX"
   [up_self_fail]="Impossibile aggiornare il codice di Termux On DeX"
+  [up_self_local]="Il codice di Termux On DeX ha modifiche fatte a mano: non lo aggiorno"
+  [up_x11_new]="C'è una nuova versione di Termux:X11 (%s). Installarla chiude Termux e il desktop per un momento: la installo adesso?"
+  [up_x11_later]="Termux:X11: la installi quando vuoi con tod update"
   [up_pkgs]="Aggiornamento dei pacchetti Termux"
   [up_pkgs_fail]="Aggiornamento dei pacchetti non riuscito"
   [up_cx_fail]="Aggiornamento del container non riuscito"
@@ -619,6 +622,9 @@ declare -gA TOD_MSG_en=(
 
   [up_self]="Updating Termux On DeX"
   [up_self_fail]="Could not update the Termux On DeX code"
+  [up_self_local]="The Termux On DeX code has local changes: not updating it"
+  [up_x11_new]="A new Termux:X11 version is available (%s). Installing it closes Termux and the desktop for a moment: install it now?"
+  [up_x11_later]="Termux:X11: install it any time with tod update"
   [up_pkgs]="Updating Termux packages"
   [up_pkgs_fail]="Package update failed"
   [up_cx_fail]="Container update failed"

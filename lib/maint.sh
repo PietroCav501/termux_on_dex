@@ -45,11 +45,93 @@ tod_doctor() { # report da allegare alle issue
   printf '\n%s\n' "$(t doc_hint "$TOD_LOG")"
 }
 
-tod_update() {
+# ----------------------------------------------------------------------------
+#  Il codice di Termux On DeX da GitHub: tod update e la finestra Aggiornamenti (_self_check, _self_update)
+# ----------------------------------------------------------------------------
+self_upstream() { # → "origin v2" se questa copia di tod segue un ramo su GitHub (installazione), sennò errore
+  local up
+  [[ -d $TOD_ROOT/.git ]] && have git || return 1
+  up=$(git -C "$TOD_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || return 1
+  [[ $up == ?*/?* ]] || return 1
+  printf '%s %s' "${up%%/*}" "${up#*/}"
+}
+
+self_check() { # tod _self_check [--locale]: novità di Termux On DeX → righe chiave=valore per Aggiornamenti
+  local up remote branch here new
+  if ! up=$(self_upstream); then echo "stato=nessuno"; return 0; fi
+  read -r remote branch <<<"$up"
+  # 30 commit bastano a contare le novità di una copia leggera (git clone --depth 1 dell'installazione)
+  if [[ ${1:-} != --locale ]] && ! timeout 120 git -C "$TOD_ROOT" fetch -q --depth 30 "$remote" "$branch" 2>/dev/null; then
+    echo "stato=errore"
+    return 0
+  fi
+  here=$(git -C "$TOD_ROOT" rev-parse HEAD)
+  new=$(git -C "$TOD_ROOT" rev-parse -q --verify FETCH_HEAD 2>/dev/null) || new=$here
+  if [[ $new == "$here" ]]; then echo "stato=aggiornato"; return 0; fi
+  printf 'stato=nuovo\nda=%s\na=%s\n' "${here:0:7}" "${new:0:7}"
+  # storia riscritta su GitHub (o troppo vecchia): le novità non si contano, ma l'aggiornamento c'è
+  if git -C "$TOD_ROOT" merge-base --is-ancestor HEAD FETCH_HEAD 2>/dev/null; then
+    printf 'novita=%s\n' "$(git -C "$TOD_ROOT" rev-list --count HEAD..FETCH_HEAD)"
+    git -C "$TOD_ROOT" log --format='titolo=%s' -n 8 HEAD..FETCH_HEAD
+  else
+    git -C "$TOD_ROOT" log --format='titolo=%s' -n 1 FETCH_HEAD
+  fi
+}
+
+self_is_install() { # è la copia di tod fatta da install.sh (non una copia di sviluppo)?
+  local inst="${TOD_TERMUX_HOME:-$HOME}/.local/share/tod"
+  # leggera (git clone --depth 1), o al suo posto: un controllo con fetch --depth 30 su un ramo di pochi commit
+  # scarica tutta la storia e la copia smette di essere "leggera"
+  [[ $(git -C "$TOD_ROOT" rev-parse --is-shallow-repository 2>/dev/null) == true ]] && return 0
+  [[ -d $inst && ! -L $inst && $(cd "$TOD_ROOT" && pwd -P) == "$(cd "$inst" && pwd -P)" ]]
+}
+
+self_update() { # il codice nuovo da GitHub. 0 = aggiornato o già aggiornato
+  local up remote branch
+  up=$(self_upstream) || return 1
+  read -r remote branch <<<"$up"
+  if self_is_install; then
+    # copia dell'installazione: come install.sh, così regge anche una storia riscritta
+    # su GitHub (1° novembre: dopo il commit unico, git pull --ff-only falliva sulle installazioni del 31 ottobre).
+    # Ma mai sopra modifiche fatte a mano
+    # (i permessi non contano: install.sh e questa funzione fanno chmod 755 su tod)
+    if [[ -n $(git -C "$TOD_ROOT" -c core.fileMode=false status --porcelain --untracked-files=no) ]]; then
+      warn "$(t up_self_local)"
+      return 1
+    fi
+    git -C "$TOD_ROOT" fetch -q --depth 1 "$remote" "$branch" || return 1
+    git -C "$TOD_ROOT" reset -q --hard FETCH_HEAD || return 1
+  else
+    git -C "$TOD_ROOT" pull -q --ff-only "$remote" "$branch" || return 1   # una copia di sviluppo: solo avanti
+  fi
+  chmod 755 "$TOD_ROOT/tod"
+}
+
+self_after() { # tod _self_after: con il codice nuovo, i file che dipendono da lui (dalla finestra Aggiornamenti)
+  desktop_install_entries || true
+  # dischi USB: i file di tod-lkl della versione nuova
+  if usb_on && ! usb_lkl_ok; then usb_install || warn "$(t s_usb)"; fi
+  # Termux:X11 nuova: installarla chiude Termux (sharedUid), quindi solo da tod update in Termux
+  if x11_glamor_da_aggiornare; then echo "x11=nuova"; fi
+  return 0
+}
+
+self_update_cli() { # tod _self_update: codice nuovo, poi i passi successivi eseguiti dal codice nuovo
+  self_update || { err "$(t up_self_fail)"; return 1; }
+  exec "$TOD_ROOT/tod" _self_after
+}
+
+tod_update() { # tod update [--senza-codice]
   local rel tag reprobe=0 before after
   detect_device
-  if [[ -d $TOD_ROOT/.git ]] && have git; then
-    run_step "$(t up_self)" git -C "$TOD_ROOT" pull --ff-only || warn "$(t up_self_fail)"
+  if [[ ${1:-} != --senza-codice ]] && self_upstream >/dev/null; then
+    before=$(git -C "$TOD_ROOT" rev-parse HEAD)
+    if run_step "$(t up_self)" self_update; then
+      # codice cambiato: il resto dell'aggiornamento lo fa la versione nuova (versioni di LKL, Termux:X11...)
+      if [[ $(git -C "$TOD_ROOT" rev-parse HEAD) != "$before" ]]; then exec "$TOD_ROOT/tod" update --senza-codice; fi
+    else
+      warn "$(t up_self_fail)"
+    fi
   fi
   before=$(pkg_version mesa)
   run_step "$(t up_pkgs)" pkg_upgrade || warn "$(t up_pkgs_fail)"
@@ -68,6 +150,7 @@ tod_update() {
   if usb_on && { ! usb_lkl_ok || [[ -f $(usb_data)/disco.img ]]; }; then run_step "$(t s_usb)" usb_install || warn "$(t s_usb)"; fi
   if (( reprobe )); then run_step "$(t s_gpu_probe)" gpu_reprobe || warn "$(t gpu_none)"; fi
   ok "$(t up_done)"
+  x11_glamor_aggiorna || true   # per ultima: installare la Termux:X11 chiude Termux
 }
 
 tod_first_timestamp() { # inizio della prima installazione (configurazione o primo log)

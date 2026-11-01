@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Aggiornamenti, come Windows Update: un posto solo per Termux e Debian.
+"""Aggiornamenti, come Windows Update: un posto solo per Termux On DeX, Termux e Debian.
 
   tod-updates.py                     la finestra (Impostazioni → Aggiornamenti, o clic sull'avviso)
   tod-updates.py controlla           aggiorna gli elenchi e scrive ~/.local/state/tod/updates.json
   tod-updates.py controlla --ciclo   in sottofondo per la sessione: dopo 2 minuti, poi ogni 6 ore;
                                      se ci sono aggiornamenti nuovi lo dice con una notifica
 
+Termux On DeX stesso (il codice da GitHub) lo controlla e lo aggiorna `tod _self_check` / `tod _self_update`.
 Gira in Termux (PyGObject). Le app aperte che vanno aggiornate si chiudono prima (chiedendo) e si
 riaprono dopo. Mai toccati: i pacchetti bloccati (apt-mark hold: i driver grafici) e
 termux-x11-nightly, che deve restare abbinato all'app Termux:X11.
@@ -26,6 +27,7 @@ STATE = os.path.join(STATE_DIR, "updates.json")
 LOG = os.path.join(STATE_DIR, "updates.log")
 TMP = os.environ.get("TMPDIR", os.path.join(PREFIX, "tmp"))
 PIDFILE = os.path.join(TMP, "tod-updates.pid")
+TOD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tod")   # questa copia di tod
 PROTECTED = {"termux-x11-nightly"}
 ITALIAN = os.environ.get("LANGUAGE", os.environ.get("LANG", "")).startswith("it")
 # il primo controllo dopo 10 minuti: apt update di Termux e Debian è pesante, e appena acceso il
@@ -153,9 +155,38 @@ def app_entries(pkg, info_dir, root=""):
                        "desktop": base}
 
 
+def tod_item(text):
+    """L'uscita di `tod _self_check` → la voce "Termux On DeX" dell'elenco, o None se non c'è niente di nuovo."""
+    d, titoli = {}, []
+    for line in text.splitlines():
+        k, _, v = line.partition("=")
+        if k == "titolo":
+            titoli.append(v)
+        elif k:
+            d[k] = v
+    if d.get("stato") != "nuovo":
+        return None
+    n = d.get("novita", "")
+    desc = (T("1 novità", "1 change") if n == "1" else T(f"{n} novità", f"{n} changes") if n not in ("", "0")
+            else T("Nuova versione", "New version"))
+    if titoli and ITALIAN:   # i titoli delle modifiche sono in italiano
+        desc += " · " + titoli[0]
+    return {"name": "termux-on-dex", "where": "tod", "app": "Termux On DeX", "icon": "tod-start",
+            "from": d.get("da", ""), "to": d.get("a", ""), "desc": desc, "titoli": titoli}
+
+
+def all_items(st):
+    return st.get("tod", []) + st.get("termux", []) + st.get("debian", [])
+
+
 def check(refresh=True):
     """Aggiorna gli elenchi (se refresh) e scrive cosa c'è da aggiornare. Ritorna lo stato."""
-    st = {"time": time.time(), "termux": [], "debian": [], "error": ""}
+    st = {"time": time.time(), "tod": [], "termux": [], "debian": [], "error": ""}
+    # Termux On DeX: il ramo su GitHub (senza refresh solo il confronto con l'ultimo scaricato)
+    _, out = run(["bash", TOD, "_self_check"] + ([] if refresh else ["--locale"]), timeout=180)
+    it = tod_item(out)
+    if it:
+        st["tod"].append(it)
     if refresh:
         rc, out = run(["nice", "-n", "10", "apt-get", "update", "-qq"])
         if rc != 0:
@@ -207,11 +238,12 @@ def load():
     for k in ("termux", "debian"):   # stati scritti da versioni precedenti
         for u in st.get(k, []):
             u.setdefault("where", k)
+    st.setdefault("tod", [])
     return st
 
 
 def summary(st):
-    items = st.get("termux", []) + st.get("debian", [])
+    items = all_items(st)
     apps = [u["app"] for u in items if u.get("app")]
     n = len(items)
     if not n:
@@ -226,7 +258,7 @@ def summary(st):
 
 
 def notify(st):
-    items = st.get("termux", []) + st.get("debian", [])
+    items = all_items(st)
     keys = sorted(f"{u['name']}={u['to']}" for u in items)
     if not keys or keys == sorted(st.get("notified", [])):
         return
@@ -265,7 +297,7 @@ def loop():
     while x_alive():
         if time.time() >= next_at:
             st = check()
-            log(f"controllo: Termux {len(st['termux'])}, Debian {len(st['debian'])} {st['error']}")
+            log(f"controllo: Termux On DeX {len(st['tod'])}, Termux {len(st['termux'])}, Debian {len(st['debian'])} {st['error']}")
             notify(st)
             next_at = time.time() + EVERY
         time.sleep(30)
@@ -334,18 +366,47 @@ def parse_size(num, unit):
     return v * {"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9}.get(unit, 1)
 
 
+def tod_update(progress, base, span):
+    """Termux On DeX dal suo ramo su GitHub (tod _self_update, poi i passi del codice nuovo). → (ok, nota)"""
+    progress(base, T("Scaricamento di Termux On DeX…", "Downloading Termux On DeX…"))
+    try:   # anche stderr: i messaggi di errore di tod (err, warn) vanno lì
+        r = subprocess.run(["bash", TOD, "_self_update"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                           timeout=1800)
+        rc, out = r.returncode, re.sub(r"\x1b\[[0-9;]*m", "", r.stdout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        rc, out = 1, str(e)
+    log("tod _self_update: " + out[-600:])
+    if rc != 0:
+        righe = [r.strip() for r in out.splitlines() if r.strip()]
+        errori = [r for r in righe if r.startswith(("✘", "!"))]   # err/warn di tod: dopo viene "dettagli nel registro"
+        return False, (errori or righe or [T("aggiornamento non riuscito", "update failed")])[-1].lstrip("✘! ")
+    progress(base + span, T("Termux On DeX aggiornato", "Termux On DeX updated"))
+    nota = T("Termux On DeX è aggiornato: barra, Start e finestre cambiano al prossimo avvio del desktop.",
+             "Termux On DeX is updated: the taskbar, Start menu and windows change the next time the desktop starts.")
+    if "x11=nuova" in out:   # installarla chiude Termux (sharedUid): non da qui
+        nota += " " + T("C'è anche una nuova Termux:X11: installala da Termux con tod update (il desktop si chiude per un momento).",
+                        "There's also a new Termux:X11: install it from Termux with tod update (the desktop closes for a moment).")
+    return True, nota
+
+
 def install(items, progress):
-    """Aggiorna questi pacchetti: Termux prima, poi Debian. progress(fraction, testo). → (ok, messaggio)
+    """Aggiorna queste voci: Termux On DeX, poi Termux, poi Debian. progress(fraction, testo). → (ok, messaggio)
 
     Avanzamento vero da apt (APT::Status-Fd: "dlstatus" per lo scaricamento, "pmstatus" per
     l'installazione): ogni gruppo vale metà scaricamento e metà installazione, e durante lo
     scaricamento si mostrano MB fatti/totali, velocità e tempo che manca (Pietro: "non mi fa capire
     che sta lavorando, specialmente durante il download")."""
     names = {u["name"]: u.get("app") or u["name"] for u in items}
-    groups = [(w, [u["name"] for u in items if u.get("where") == w]) for w in ("termux", "debian")]
+    groups = [(w, [u["name"] for u in items if u.get("where") == w]) for w in ("tod", "termux", "debian")]
     groups = [(w, p) for w, p in groups if p]
+    nota = ""
     for gi, (where, pkgs) in enumerate(groups):
         base, span = gi / len(groups), 1 / len(groups)
+        if where == "tod":
+            ok, nota = tod_update(progress, base, span)
+            if not ok:
+                return False, nota
+            continue
         progress(base, T("Preparazione…", "Preparing…"))
         status = ["-o", "APT::Status-Fd=1"]
         if where == "termux":
@@ -394,7 +455,7 @@ def install(items, progress):
             log("errore:\n" + "\n".join(tail))
             return False, "\n".join(tail[-3:])
     progress(1.0, T("Fatto", "Done"))
-    return True, ""
+    return True, nota
 
 
 # --- finestra -----------------------------------------------------------------------------
@@ -469,7 +530,7 @@ def gui():
             for c in self.list.get_children():
                 self.list.remove(c)
             st = self.st
-            items = st.get("termux", []) + st.get("debian", [])
+            items = all_items(st)
             apps = [u for u in items if u.get("app")]
             system = [u for u in items if not u.get("app")]
             n = len(items)
@@ -482,7 +543,7 @@ def gui():
             self.row_buttons = []
             for u in apps:
                 self.list.add(self.row(u["app"], u.get("icon") or "application-x-executable",
-                                       f"{u['from']} → {u['to']}", [u]))
+                                       u.get("desc") or f"{u['from']} → {u['to']}", [u]))
             if system:
                 names = ", ".join(u["name"] for u in system[:12]) + ("…" if len(system) > 12 else "")
                 self.list.add(self.row(T(f"Componenti di sistema ({len(system)})", f"System components ({len(system)})"),
@@ -520,7 +581,7 @@ def gui():
             self.check_btn.set_sensitive(not on)
             for b in getattr(self, "row_buttons", []):
                 b.set_sensitive(not on)
-            self.go.set_sensitive(not on and bool(self.st.get("termux") or self.st.get("debian")))
+            self.go.set_sensitive(not on and bool(all_items(self.st)))
             self.prog.set_visible(on)
             (self.spin.start if on else self.spin.stop)()
             if on:
@@ -544,7 +605,7 @@ def gui():
 
         def start_install(self, items=None):
             if items is None:
-                items = self.st.get("termux", []) + self.st.get("debian", [])
+                items = all_items(self.st)
             open_apps = [(u, running_pids(u.get("exe"))) for u in items if u.get("app")]
             open_apps = [(u, p) for u, p in open_apps if p]
             if open_apps:
@@ -589,6 +650,9 @@ def gui():
                 self.fill()
                 if not ok:
                     self.sub.set_text(T("Qualcosa non è andato: ", "Something went wrong: ") + msg.splitlines()[-1] if msg else "")
+                elif msg:   # dopo Termux On DeX: cosa cambia e quando
+                    self.sub.set_text(msg)
+                    self.sub.set_line_wrap(True)
                 for u in self.closed_apps:   # si riaprono le app chiuse per l'aggiornamento
                     for prefix in ("", "tod-cx-"):
                         try:
@@ -612,7 +676,7 @@ def main():
         if "--ciclo" in args or "--loop" in args:
             return loop()
         st = check()
-        print(json.dumps({k: len(st[k]) for k in ("termux", "debian")}))
+        print(json.dumps({k: len(st[k]) for k in ("tod", "termux", "debian")}))
         return 0
     return gui()
 

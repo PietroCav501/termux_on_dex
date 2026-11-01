@@ -145,6 +145,7 @@ x11_app_download() { # x11_app_download [shareduid|regular]
       log "Termux:X11: versione di Termux On DeX con glamor (x11-glamor-$X11_GLAMOR_VERSIONE)"
       # il pacchetto termux-x11-nightly resta quello del repository di Termux: il server viene dall'APK
       conf_set X11_GLAMOR 1
+      conf_set X11_GLAMOR_INSTALLATA "$X11_GLAMOR_VERSIONE"   # per sapere quando ne esce una nuova
       return 0
     fi
     rm -f "$TOD_X11_APK"
@@ -164,6 +165,22 @@ x11_app_download() { # x11_app_download [shareduid|regular]
   url=$(jq -r 'first(.assets[] | select(.name | test("^termux-x11-nightly.*\\.deb$"))) | .browser_download_url' <<<"$rel")
   if [[ -n $url && $url != null ]]; then net_download "$url" "$TOD_X11_DEB" || rm -f "$TOD_X11_DEB"; fi
   return 0
+}
+
+x11_glamor_da_aggiornare() { # c'è una Termux:X11 di Termux On DeX più nuova di quella installata?
+  # (le installazioni da prima del 1° novembre non hanno il numero: avevano la 1)
+  [[ $(conf_get X11_GLAMOR 0) == 1 && $(conf_get X11_GLAMOR_INSTALLATA 1) != "$X11_GLAMOR_VERSIONE" ]]
+}
+
+x11_glamor_aggiorna() { # da tod update, come ultimo passo: installarla chiude Termux e il desktop (sharedUid)
+  x11_glamor_da_aggiornare || return 0
+  if ! ui_yesno "Termux:X11" "$(t up_x11_new "$X11_GLAMOR_VERSIONE")" y; then
+    info "$(t up_x11_later)"
+    return 0
+  fi
+  run_step "$(t x11app_dl)" x11_app_download shareduid || { err "$(t x11app_dl_fail)"; return 1; }
+  if priv_ready && apk_install_auto "$TOD_X11_APK"; then return 0; fi
+  termux-open "$TOD_X11_APK" >/dev/null 2>&1 || true
 }
 
 x11_app_ensure() { # interattivo: non va dentro run_step
