@@ -173,12 +173,13 @@ lingua_setup() { # passo dell'installer e "tod lingua": non blocca mai l'install
 }
 
 lingua_ripara() { # nel desktop: lingua scelta ma traduzione di XFCE mancante (passo fallito) → in sottofondo
-  local l prova="$TOD_STATE_DIR/lingua-tentativo" oggi
+  local l prova="$TOD_STATE_DIR/lingua-tentativo" segno
   l=$(lingua_code)
   if [[ $l == en ]] || lingua_active; then return 0; fi
-  oggi=$(date +%F)
-  if [[ $(cat "$prova" 2>/dev/null) == "$oggi" ]]; then return 0; fi   # al massimo un tentativo al giorno
-  echo "$oggi" >"$prova"
+  # al massimo un tentativo al giorno, ma subito se il modulo è cambiato (un aggiornamento che corregge la causa)
+  segno="$(date +%F) $(cksum <"$TOD_ROOT/share/tod-gettext.c" 2>/dev/null | cut -d' ' -f1)"
+  if [[ $(cat "$prova" 2>/dev/null) == "$segno" ]]; then return 0; fi
+  echo "$segno" >"$prova"
   log "lingua: traduzione '$l' mancante, la installo in sottofondo"
   (
     exec </dev/null >>"$TOD_LOG" 2>&1

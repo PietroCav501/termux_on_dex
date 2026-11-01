@@ -1453,8 +1453,8 @@ void g_object_add_weak_pointer(void *object, void **location) {
  * Esplora file cancellava per sempre. E le vede su un altro disco: trascinare copiava invece di spostare.
  * Qui: g_file_trash sposta nel Cestino del desktop (con .trashinfo: si ripristina al suo posto), e in
  * Esplora file e scrivania i file del telefono sono "cestinabili" e sullo stesso disco della home. */
-#include <spawn.h>
-#include <sys/wait.h>
+#include <sys/wait.h>   /* niente spawn.h: in Termux lo porta solo libandroid-spawn, che un Termux nuovo non ha
+                          (1° novembre, S20+: modulo non compilato, desktop in inglese) */
 #include <time.h>
 extern char **environ;
 
@@ -1491,9 +1491,13 @@ static int tod_mv(const char *da, const char *a) {   /* mv: anche cartelle, tra 
     const char *pre = getenv("PREFIX");
     snprintf(mv, sizeof mv, "%s/bin/mv", pre && *pre ? pre : "/data/data/com.termux/files/usr");
     char *argv[] = {"mv", "-f", "-T", "--", (char *)da, (char *)a, NULL};   /* -T: mai "dentro" a una cartella */
-    pid_t pid;
     int st;
-    if (posix_spawn(&pid, mv, NULL, NULL, argv, environ) != 0) return -1;
+    pid_t pid = fork();   /* fork + execve: ci sono su ogni Android (posix_spawn solo da Android 9) */
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execve(mv, argv, environ);
+        _exit(127);
+    }
     while (waitpid(pid, &st, 0) < 0)
         if (errno != EINTR) return -1;
     return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : -1;

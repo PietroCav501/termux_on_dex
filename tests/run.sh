@@ -3654,6 +3654,18 @@ test_lingua_code_and_env() {
   have() { command -v "$1" >/dev/null 2>&1; }
 }
 
+test_tod_gettext_compila_su_termux_nuovo() { # 1° novembre: spawn.h (solo con libandroid-spawn) → modulo non compilato
+  # tod-gettext.c si compila sul telefono di chi installa: solo intestazioni di ndk-sysroot, che arriva con clang
+  local ok=" assert.h ctype.h dirent.h dlfcn.h errno.h fcntl.h inttypes.h limits.h locale.h math.h poll.h pthread.h
+    pwd.h signal.h stdarg.h stdbool.h stddef.h stdint.h stdio.h stdlib.h string.h strings.h sys/mman.h sys/socket.h
+    sys/stat.h sys/syscall.h sys/time.h sys/types.h sys/un.h sys/wait.h termios.h time.h unistd.h wchar.h " h fuori=""
+  ok=$(tr -s ' \n' ' ' <<<"$ok")
+  for h in $(grep -o '^#include <[^>]*>' "$ROOT/share/tod-gettext.c" | sed 's/#include <//; s/>//'); do
+    [[ $ok == *" $h "* ]] || fuori+="$h "
+  done
+  eq "intestazioni di un Termux nuovo (verificare con dpkg -S che vengano da ndk-sysroot)" "" "$fuori"
+}
+
 test_lingua_ripara() { # la traduzione mancante si installa da sola all'avvio del desktop, una volta al giorno
   conf_set LINGUA it
   lingua_setup() { echo chiamata >>"$HOME/ripara"; touch "$LINGUA_SO"; mkdir -p "$LINGUA_DIR/it/LC_MESSAGES"
@@ -3671,10 +3683,15 @@ test_lingua_ripara() { # la traduzione mancante si installa da sola all'avvio de
   lingua_ripara
   wait
   eq "fallita oggi: si riprova domani, non a ogni avvio" "" "$(cat "$HOME/ripara" 2>/dev/null)"
-  echo 2000-01-01 >"$TOD_STATE_DIR/lingua-tentativo"
+  echo "2000-01-01 $(cksum <"$TOD_ROOT/share/tod-gettext.c" | cut -d' ' -f1)" >"$TOD_STATE_DIR/lingua-tentativo"
   lingua_ripara
   wait
   eq "un altro giorno: si riprova" chiamata "$(cat "$HOME/ripara")"
+  rm -f "$LINGUA_SO" "$HOME/ripara"
+  echo "$(date +%F) 12345" >"$TOD_STATE_DIR/lingua-tentativo"
+  lingua_ripara
+  wait
+  eq "stesso giorno ma modulo cambiato (aggiornamento): si riprova subito" chiamata "$(cat "$HOME/ripara")"
   conf_set LINGUA en
   rm -f "$HOME/ripara" "$TOD_STATE_DIR/lingua-tentativo"
   lingua_ripara
