@@ -1,0 +1,18 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Barra delle applicazioni di DeX OS (tod-barra.py): la avvia la sessione al posto di xfce4-panel.
+# Se cade, riparte (al massimo 5 volte in 2 minuti); con faulthandler il registro dice dove è caduta.
+d=$(dirname "$(readlink -f "$0")")
+L=${XDG_STATE_HOME:-$HOME/.local/state}/tod/barra.log
+if [ -w "$(dirname "$L")" ]; then exec 2>>"$L"; fi
+n=0 t0=$(date +%s)
+while :; do
+  python3 -X faulthandler "$d/tod-barra.py" "$@"
+  rc=$?
+  case $rc in 0 | 143) exit 0 ;; esac   # chiusa apposta (o sostituita)
+  now=$(date +%s)
+  if [ $((now - t0)) -gt 120 ]; then n=0 t0=$now; fi
+  n=$((n + 1))
+  echo "tod-barra $(date +%T) caduta (codice $rc), riparto ($n)" >&2
+  if [ $n -ge 5 ]; then echo "tod-barra: troppe cadute, mi fermo" >&2; exit 1; fi
+  sleep 1
+done

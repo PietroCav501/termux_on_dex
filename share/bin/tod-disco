@@ -1,0 +1,188 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Comandi sui dischi del terminale del desktop (Termux On DeX): lsblk, blkid, fdisk, parted, mkfs.*, fsck.*,
+# mount, umount... Ognuno di questi nomi è un collegamento a questo file. "sudo fdisk ..." va uguale.
+#   tod-disco COMANDO ARGOMENTI  oppure  lsblk / fdisk / ... ARGOMENTI
+#
+# I dischi li legge share/usb/lkl/tod-lkl (LKL) e tutto gira qui: i programmi veri di Termux (e del container Debian per quelli che Termux non ha, come ntfs-3g) vedono
+# /dev/sda, /dev/sda1... grazie al "disco finto" (tod-disco.so, LD_PRELOAD; tod-disco-glibc.so per Debian).
+# Un comando che scrive fa smontare le partizioni del suo disco, che alla fine si rileggono e si
+# rimontano da sole. lsblk, blkid, mount e umount li fa questo file, dai dati di tod-lkl.
+nome=${0##*/}
+if [[ $nome == tod-disco ]]; then
+  [[ $# -gt 0 ]] || { echo "uso: tod-disco COMANDO [ARGOMENTI] (es. tod-disco lsblk)" >&2; exit 2; }
+  nome=$1; shift
+fi
+qui=$(dirname "$(readlink -f "$0")")
+P=${PREFIX:-/data/data/com.termux/files/usr}
+RUN=${TMPDIR:-$P/tmp}/tod-usb
+DATA="${TOD_TERMUX_HOME:-$HOME}/.local/share/tod-usb"
+[[ -d $DATA ]] || DATA=/data/data/com.termux/files/home/.local/share/tod-usb
+DISCO_SO=${TOD_DISCO_SO:-$DATA/tod-disco.so}
+
+shopt -s nullglob
+parti=("$RUN"/lkl-*.parti)
+if ((${#parti[@]} == 0)) || [[ ! -f $DISCO_SO ]]; then
+  # nessun disco collegato (o dischi USB non ancora pronti): come Linux senza dischi USB
+  case $nome in
+    lsblk) printf '%-8s %7s %4s %-5s %s\n' NAME SIZE RO TYPE MOUNTPOINTS; exit 0 ;;
+    blkid|mount) exit 0 ;;
+    *) for a in "$@"; do [[ $a == /dev/sd* ]] && { echo "$nome: $a: disco inesistente (nessun disco USB collegato)" >&2; exit 1; }; done ;;
+  esac
+  if [[ -x $P/bin/$nome ]]; then exec "$P/bin/$nome" "$@"; fi
+  echo "$nome: nessun disco USB collegato" >&2; exit 1
+fi
+
+# i dischi in ordine di collegamento, come li numera tod-disco.so: sda = il primo
+mapfile -t ids < <(for f in "${parti[@]}"; do f=${f##*/lkl-}; echo "${f%.parti}"; done | sort -t b -k2 -n)
+LETTERE=abcdefghijklmnopqrstuvwxyz
+lettera() { local i; for i in "${!ids[@]}"; do [[ ${ids[$i]} == "$1" ]] && { echo "${LETTERE:i:1}"; return; }; done; }
+dispositivi() { local i; for i in "${!ids[@]}"; do echo "/dev/sd${LETTERE:i:1}"; done; }
+# righe "dispositivo<TAB>numero<TAB>inizio<TAB>byte<TAB>fs<TAB>etichetta<TAB>uuid<TAB>nome" (numero 0: il disco)
+tutte() {
+  local id l n ini byte fs eti uuid nm
+  for id in "${ids[@]}"; do
+    l=$(lettera "$id")
+    # TAB → \037: read con IFS di tabulazioni unirebbe i campi vuoti (etichetta mancante)
+    while IFS=$'\037' read -r n ini byte fs eti uuid nm; do
+      [[ $nm == - ]] && nm=""
+      if [[ $n == 0 ]]; then printf '/dev/sd%s\0370\0370\037%s\037\037\037\037\n' "$l" "$byte"
+      else printf '/dev/sd%s%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$l" "$n" "$n" "$ini" "$byte" "$fs" "$eti" "$uuid" "$nm"; fi
+    done < <(tr '\t' '\037' <"$RUN/lkl-$id.parti")
+  done
+}
+misura() { LC_ALL=C awk -v b="$1" 'BEGIN { split("B K M G T", u); for (i = 1; b >= 1024 && i < 5; i++) b /= 1024; printf (i == 1 ? "%d%s" : "%.1f%s"), b, u[i] }'; }
+di_chi() { # /dev/sda1 → id del disco e numero della partizione
+  local d=${1#/dev/sd} i
+  i=${LETTERE%%"${d:0:1}"*}; i=${#i}
+  [[ -n ${d:0:1} && $i -lt ${#ids[@]} ]] || return 1
+  printf '%s %s\n' "${ids[$i]}" "${d:1}"
+}
+vero() { # il programma vero, col disco finto. Quelli che Termux non ha: come nelle distribuzioni, si dice come averli
+  local cmd=$1 pk=""
+  shift
+  if [[ -x $P/bin/$cmd ]]; then
+    TOD_DISCHI=$RUN LD_PRELOAD="$DISCO_SO${LD_PRELOAD:+:$LD_PRELOAD}" exec "$P/bin/$cmd" "$@"
+  fi
+  # quelli che Termux non ha (NTFS: ntfs-3g) dal container Debian, col disco finto per glibc. Nel
+  # container /tmp è $TMPDIR di Termux (--shared-tmp)
+  local r d
+  for r in "$P/var/lib/proot-distro/containers/debian/rootfs" "$P/var/lib/proot-distro/installed-rootfs/debian"; do
+    [[ -d $r/etc ]] || continue
+    for d in usr/sbin usr/bin sbin bin; do
+      if [[ -x $r/$d/$cmd && -f ${DISCO_SO%.so}-glibc.so ]]; then
+        exec "$P/bin/tod" cx run -- env TOD_DISCHI="/tmp/${RUN#"$P/tmp/"}" LD_PRELOAD="${DISCO_SO%.so}-glibc.so" "/$d/$cmd" "$@"
+      fi
+    done
+  done
+  case $cmd in
+    fdisk|sfdisk|cfdisk) pk=fdisk ;; parted) pk=parted ;; wipefs) pk=util-linux ;;
+    mkfs.vfat|mkfs.fat|fsck.vfat|fsck.fat|fatlabel) pk=dosfstools ;;
+    mkfs.exfat|fsck.exfat|exfatlabel) pk=exfatprogs ;;
+    mkfs.ext*|fsck.ext*|e2fsck|e2label|tune2fs|mke2fs|resize2fs) pk=e2fsprogs ;;
+    mkfs.ntfs|mkntfs|ntfsfix|ntfslabel) pk=ntfs-3g ;;
+  esac
+  if [[ -n $pk ]]; then printf "Comando '%s' non trovato, ma può essere installato con:\n  sudo apt install %s\n" "$cmd" "$pk" >&2
+  else printf '%s: comando non trovato\n' "$cmd" >&2; fi
+  exit 127
+}
+
+cambia() { # i programmi che cambiano il disco
+  case $1 in
+    fdisk|sfdisk|cfdisk|parted|wipefs|mkfs|mkfs.*|mke2fs|mkntfs|mkexfatfs|fsck|fsck.*|e2fsck|ntfsfix|tune2fs|e2label|fatlabel|exfatlabel|ntfslabel|resize2fs) return 0 ;;
+  esac
+  return 1
+}
+ctl() { printf '%s\n' "$2" | timeout 60 ncat -U "$RUN/lkl-$1.ctl" >/dev/null 2>&1; }
+in_pausa() { # COMANDO ARGOMENTI: il programma con i dischi coinvolti smontati prima che li legga (sennò
+  # ragionerebbe su un file system montato, poi smontato sotto di lui: è così che si rovina), poi rimontati.
+  # "-l" di fdisk e simili solo legge: niente pausa
+  local cmd=$1 a id n coinvolti=() rc=0
+  shift
+  for a in "$@"; do
+    [[ $a == /dev/sd* ]] || continue
+    read -r id n < <(di_chi "$a") && coinvolti+=("$id")
+  done
+  ((${#coinvolti[@]})) || coinvolti=("${ids[@]}")
+  mapfile -t coinvolti < <(printf '%s\n' "${coinvolti[@]}" | sort -u)
+  for id in "${coinvolti[@]}"; do ctl "$id" pausa; done
+  trap '' INT   # Ctrl+C ferma il programma, non la ripresa dei dischi
+  ( trap - INT; vero "$cmd" "$@" ) || rc=$?
+  for id in "${coinvolti[@]}"; do ctl "$id" riprendi; done
+  exit $rc
+}
+solo_lettura() { # fdisk -l, parted -l, sfdisk -l/-d, e2fsck -n, fsck.* -n: non cambiano niente
+  local a
+  for a in "$@"; do case $a in -l|--list|-d|--dump|-n|--no-act|-V|--version|-h|--help) return 0 ;; esac; done
+  return 1
+}
+
+case $nome in
+  lsblk)
+    printf '%-8s %7s %4s %-5s %s\n' NAME SIZE RO TYPE MOUNTPOINTS
+    tutte | while IFS=$'\037' read -r dev n ini byte fs eti uuid nm; do
+      if [[ $n == 0 ]]; then printf '%-8s %7s %4s %-5s\n' "${dev#/dev/}" "$(misura "$byte")" 0 disk
+      else printf '%-8s %7s %4s %-5s %s\n' "└─${dev#/dev/}" "$(misura "$byte")" 0 part "${nm:+/media/usb/$nm}"; fi
+    done ;;
+  blkid)
+    tutte | while IFS=$'\037' read -r dev n ini byte fs eti uuid nm; do
+      [[ $n != 0 && -n $fs ]] || continue
+      if (($#)) && [[ " $* " != *" $dev "* ]]; then continue; fi
+      printf '%s:%s%s TYPE="%s"\n' "$dev" "${eti:+ LABEL=\"$eti\"}" "${uuid:+ UUID=\"$uuid\"}" "$fs"
+    done ;;
+  mount)   # mount /dev/sda1: rimonta una partizione espulsa (in /media/usb/<nome>, in Esplora file)
+    if (($# == 0)); then
+      tutte | while IFS=$'\037' read -r dev n ini byte fs eti uuid nm; do
+        [[ $n != 0 && -n $nm ]] && printf '%s on /media/usb/%s type %s (rw)\n' "$dev" "$nm" "$fs"
+      done
+      exit 0
+    fi
+    for a in "$@"; do
+      [[ $a == /dev/sd* ]] || continue
+      read -r id n < <(di_chi "$a") || { echo "mount: $a: disco sconosciuto" >&2; exit 32; }
+      [[ -n $n ]] || { echo "mount: $a: indica una partizione (es. ${a}1)" >&2; exit 32; }
+      r=$(printf 'monta %s\n' "$n" | timeout 30 ncat -U "$RUN/lkl-$id.ctl" 2>/dev/null)
+      [[ $r == ok ]] || { echo "mount: $a: non montata (già montata, o file system sconosciuto)" >&2; exit 32; }
+      exit 0
+    done
+    echo "uso: mount /dev/sdXN (le partizioni si montano in /media/usb/<nome>)" >&2; exit 1 ;;
+  umount|eject)   # umount /dev/sda1 | /media/usb/NOME | NOME; eject /dev/sda: tutte le sue partizioni
+    (($#)) || { echo "uso: $nome /dev/sdXN | /media/usb/NOME" >&2; exit 1; }
+    rc=0
+    for a in "$@"; do
+      [[ $a == -* ]] && continue
+      nomi=$(tutte | while IFS=$'\037' read -r dev n ini byte fs eti uuid nm; do
+        [[ -n $nm ]] || continue
+        if [[ $a == "$dev" || $a == "/media/usb/$nm" || $a == "$nm" ]] || { [[ $nome == eject && $dev == "$a"[0-9]* ]]; }; then echo "$nm"; fi
+      done)
+      [[ -n $nomi ]] || { echo "$nome: $a: non montata" >&2; rc=32; continue; }
+      while IFS= read -r nm; do bash "$qui/../usb/tod-usb" espelli "$nm"; done <<<"$nomi"
+    done
+    exit $rc ;;
+  fsck|mkfs)   # fsck /dev/sda1 → fsck.<tipo>; mkfs -t tipo /dev/sda1 → mkfs.<tipo>
+    if [[ $nome == mkfs ]]; then
+      t=ext2; args=()
+      while (($#)); do case $1 in -t) t=$2; shift 2 ;; -t*) t=${1#-t}; shift ;; *) args+=("$1"); shift ;; esac; done
+      in_pausa "mkfs.$t" "${args[@]}"
+    fi
+    for a in "$@"; do
+      [[ $a == /dev/sd* ]] || continue
+      t=$(tutte | awk -F'\037' -v d="$a" '$1 == d {print $5}')
+      [[ -n $t ]] || { echo "fsck: $a: file system sconosciuto" >&2; exit 8; }
+      [[ $t == ext[234] ]] && t=ext4
+      if solo_lettura "$@"; then vero "fsck.$t" "$@"; fi
+      in_pausa "fsck.$t" "$@"
+    done
+    echo "uso: fsck /dev/sdXN" >&2; exit 16 ;;
+  fdisk|sfdisk|parted)   # "-l" senza dischi: tutti i nostri (il programma li cercherebbe in /sys)
+    if [[ " $* " == *" -l "* || " $* " == *" --list "* ]] && [[ " $* " != *" /dev/"* ]]; then
+      mapfile -t d < <(dispositivi)
+      vero "$nome" "$@" "${d[@]}"
+    fi
+    if solo_lettura "$@"; then vero "$nome" "$@"; fi
+    in_pausa "$nome" "$@" ;;
+  udisksctl)
+    echo "udisksctl: con i dischi letti da LKL usa lsblk, mount e umount" >&2; exit 1 ;;
+  *)
+    if cambia "$nome" && ! solo_lettura "$@"; then in_pausa "$nome" "$@"; fi
+    vero "$nome" "$@" ;;
+esac

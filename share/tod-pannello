@@ -1,0 +1,25 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Pannelli della barra: tod-pannello notifiche|volume|calendario|batteria|rete apre/chiude il pannello (tod-pannelli.py resta in
+# memoria, nascosto). tod-pannello --preload: lo carica nascosto (all'avvio della sessione).
+T=${TMPDIR:-/tmp}
+d=$(dirname "$(readlink -f "$0")")
+p=$(cat "$T/tod-pannelli.pid" 2>/dev/null)
+alive() { [ -n "$1" ] && grep -q tod-pannelli.py "/proc/$1/cmdline" 2>/dev/null; }
+if [ "$1" = --preload ]; then
+  if alive "$p"; then exit 0; fi
+  exec python3 "$d/tod-pannelli.py"
+fi
+nome=${1:-notifiche}
+if alive "$p"; then
+  tok="$$"
+  printf '%s %s' "$tok" "$nome" >"$T/tod-pannelli.req"
+  kill -USR1 "$p" 2>/dev/null
+  i=0
+  while [ $i -lt 30 ]; do
+    if [ "$(cat "$T/tod-pannelli.ack" 2>/dev/null)" = "$tok" ]; then exit 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -9 "$p" 2>/dev/null   # non risponde: se ne avvia uno nuovo
+fi
+exec python3 "$d/tod-pannelli.py" --show "$nome"

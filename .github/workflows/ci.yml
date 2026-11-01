@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sintassi bash
+        run: for f in tod install.sh lib/*.sh tests/run.sh; do bash -n "$f"; done
+
+      - name: Lint set -e (trappole tipiche)
+        run: python3 tests/lint_errexit.py tod install.sh lib/*.sh
+
+      - name: ShellCheck (errori, bloccante)
+        run: shellcheck -x -S error tod install.sh lib/*.sh tests/run.sh
+
+      - name: ShellCheck (avvisi, informativo)
+        run: shellcheck -x -S warning tod install.sh lib/*.sh tests/run.sh || true
+
+      - name: Test
+        run: bash tests/run.sh

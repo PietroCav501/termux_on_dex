@@ -1,0 +1,4 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# xfce4-notifyd-config (Termux On DeX): dal campanello della barra si aprono le Impostazioni, voce
+# "notifiche". Da lì "Posizione e durata degli avvisi" apre il pannello vero (percorso completo).
+exec python3 "$(dirname "$(readlink -f "$0")")/../tod-settings.py" notifiche

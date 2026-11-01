@@ -1,0 +1,30 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Tasto Start: apre/chiude il menu (tod-start.py resta in memoria, nascosto).
+# tod-start --preload: lo carica nascosto (all'avvio della sessione).
+# Se il menu in memoria non risponde entro un secondo (bloccato), lo si riavvia da capo.
+T=${TMPDIR:-/tmp}
+d=$(dirname "$(readlink -f "$0")")
+p=$(cat "$T/tod-start.pid" 2>/dev/null)
+# il pid conta solo se è davvero il menu (dopo un riavvio il numero può essere di un altro processo)
+alive() { [ -n "$1" ] && grep -q tod-start.py "/proc/$1/cmdline" 2>/dev/null; }
+if [ "$1" = --preload ]; then
+  if alive "$p"; then exit 0; fi
+  exec python3 "$d/tod-start.py"
+fi
+L=${XDG_STATE_HOME:-$HOME/.local/state}/tod/start.log
+if [ -w "$L" ]; then exec 2>>"$L"; fi
+echo "tod-start $(date +%T) clic (menu in memoria: ${p:-nessuno})" >&2
+if alive "$p"; then
+  tok="$$"
+  printf '%s' "$tok" >"$T/tod-start.req"
+  kill -USR1 "$p" 2>/dev/null
+  i=0   # 3 s: sotto carico (avvio della sessione) il menu può metterci un po' a comparire
+  while [ $i -lt 30 ]; do
+    if [ "$(cat "$T/tod-start.ack" 2>/dev/null)" = "$tok" ]; then exit 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  echo "tod-start: il menu ($p) non risponde, lo riavvio" >&2
+  kill -9 "$p" 2>/dev/null
+fi
+exec python3 "$d/tod-start.py" --show

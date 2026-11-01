@@ -1,0 +1,26 @@
+diff -ruN a/com/termux/x11/MainActivity.smali b/com/termux/x11/MainActivity.smali
+--- a/com/termux/x11/MainActivity.smali	2026-10-31 00:14:16.286996583 +0100
++++ b/com/termux/x11/MainActivity.smali	2026-10-31 00:14:16.290996583 +0100
+@@ -6210,6 +6210,22 @@
+ 
+     invoke-virtual {v3, v4}, Landroid/view/View;->setOnGenericMotionListener(Landroid/view/View$OnGenericMotionListener;)V
+ 
++    # Termux On DeX: movimenti di mouse e touchpad consegnati subito, non raggruppati a ogni fotogramma
++    # dello schermo (prima solo il tocco con il dito, su ACTION_DOWN). InputDevice.SOURCE_CLASS_POINTER = 2
++    sget v4, Landroid/os/Build$VERSION;->SDK_INT:I
++
++    const/16 v5, 0x1e
++
++    if-lt v4, v5, :tod_puntatore_fine
++
++    const/4 v4, 0x2
++
++    invoke-virtual {v3, v4}, Landroid/view/View;->requestUnbufferedDispatch(I)V
++
++    invoke-virtual {v1, v4}, Landroid/view/View;->requestUnbufferedDispatch(I)V
++
++    :tod_puntatore_fine
++
+     .line 353
+     sget v4, Landroid/os/Build$VERSION;->SDK_INT:I
+ 

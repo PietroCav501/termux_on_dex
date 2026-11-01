@@ -1,0 +1,120 @@
+diff --git a/tools/lkl/lib/virtio_blk.c b/tools/lkl/lib/virtio_blk.c
+index d8bf38bf8..a0be4f625 100644
+--- a/tools/lkl/lib/virtio_blk.c
++++ b/tools/lkl/lib/virtio_blk.c
+@@ -1,14 +1,29 @@
+ #include <lkl_host.h>
++#include <pthread.h>
++#include <stdlib.h>
+ #include "virtio.h"
+ #include "endian.h"
+ 
++/*
++ * tod: le richieste al disco si fanno in un thread per disco, non nel thread del kernel (dove arriva
++ * la notifica della coda). Un disco USB lento (un hard disk che cerca o si risveglia) teneva fermo
++ * tutto il kernel, anche le letture già in memoria. Il thread del kernel ora risponde "non ora"
++ * (enqueue < 0: la richiesta resta nella coda) e sveglia il thread del disco, che rifà il giro
++ * della coda e serve le richieste una alla volta, in ordine, come prima.
++ */
+ struct virtio_blk_dev {
+ 	struct virtio_dev dev;
+ 	struct lkl_virtio_blk_config config;
+ 	struct lkl_dev_blk_ops *ops;
+ 	struct lkl_disk disk;
++	pthread_t lavoratore;
++	pthread_mutex_t m;
++	pthread_cond_t c;
++	int da_fare, fine, avviato;
+ };
+ 
++static __thread int nel_lavoratore;
++
+ struct virtio_blk_req_trailer {
+ 	uint8_t status;
+ };
+@@ -49,6 +64,14 @@ static int blk_enqueue(struct virtio_dev *dev, int q, struct virtio_req *req)
+ 		goto out;
+ 	}
+ 
++	if (!nel_lavoratore && blk_dev->avviato) {
++		pthread_mutex_lock(&blk_dev->m);
++		blk_dev->da_fare = 1;
++		pthread_cond_signal(&blk_dev->c);
++		pthread_mutex_unlock(&blk_dev->m);
++		return -1;
++	}
++
+ 	lkl_req.type = le32toh(h->type);
+ 	lkl_req.prio = le32toh(h->ioprio);
+ 	lkl_req.sector = le64toh(h->sector);
+@@ -62,6 +85,26 @@ static int blk_enqueue(struct virtio_dev *dev, int q, struct virtio_req *req)
+ 	return 0;
+ }
+ 
++static void *blk_lavoratore(void *arg)
++{
++	struct virtio_blk_dev *d = arg;
++
++	nel_lavoratore = 1;
++	pthread_mutex_lock(&d->m);
++	for (;;) {
++		while (!d->da_fare && !d->fine)
++			pthread_cond_wait(&d->c, &d->m);
++		if (d->fine)
++			break;
++		d->da_fare = 0;
++		pthread_mutex_unlock(&d->m);
++		virtio_process_queue(&d->dev, 0);
++		pthread_mutex_lock(&d->m);
++	}
++	pthread_mutex_unlock(&d->m);
++	return NULL;
++}
++
+ static struct virtio_dev_ops blk_ops = {
+ 	.check_features = blk_check_features,
+ 	.enqueue = blk_enqueue,
+@@ -100,12 +143,27 @@ int lkl_disk_add(struct lkl_disk *disk)
+ 	}
+ 	dev->config.capacity = htole64(capacity / 512);
+ 
++	pthread_mutex_init(&dev->m, NULL);
++	pthread_cond_init(&dev->c, NULL);
++	dev->da_fare = dev->fine = 0;
++	/* TOD_LKL_BLK_SINCRONO=1: come LKL originale (solo per confronti) */
++	dev->avviato = !getenv("TOD_LKL_BLK_SINCRONO") &&
++		       pthread_create(&dev->lavoratore, NULL, blk_lavoratore, dev) == 0;
++
+ 	ret = virtio_dev_setup(&dev->dev, 1, 32);
+ 	if (ret)
+-		goto out_free;
++		goto out_stop;
+ 
+ 	return dev->dev.virtio_mmio_id;
+ 
++out_stop:
++	if (dev->avviato) {
++		pthread_mutex_lock(&dev->m);
++		dev->fine = 1;
++		pthread_cond_signal(&dev->c);
++		pthread_mutex_unlock(&dev->m);
++		pthread_join(dev->lavoratore, NULL);
++	}
+ out_free:
+ 	lkl_host_ops.mem_free(dev);
+ 
+@@ -125,6 +183,14 @@ int lkl_disk_remove(struct lkl_disk disk)
+ 	if (ret < 0)
+ 		return ret;
+ 
++	if (dev->avviato) {
++		pthread_mutex_lock(&dev->m);
++		dev->fine = 1;
++		pthread_cond_signal(&dev->c);
++		pthread_mutex_unlock(&dev->m);
++		pthread_join(dev->lavoratore, NULL);
++	}
++
+ 	lkl_host_ops.mem_free(dev);
+ 
+ 	return 0;

@@ -1,0 +1,376 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Dischi USB nel desktop, senza root e senza emulazione. Android passa il disco a Termux (termux-usb, con il
+# permesso chiesto all'utente); share/usb/lkl/tod-lkl (il codice di Linux come libreria, LKL) lo legge e ne
+# monta le partizioni, una per disco. I programmi del desktop le vedono come cartelle vere in /media/usb/<Nome>
+# (tod-fs.so in LD_PRELOAD, da lib/session.sh e da tod-run nel container); Esplora file e la scrivania le
+# mostrano come dischi già montati (tod-volumi.py), con l'icona di espulsione.
+#
+#   tod-usb sorveglia     servizio della sessione: dischi collegati e scollegati, espulsioni
+#   tod-usb espelli NOME  smonta in sicurezza la partizione NOME (lo fa anche l'icona di espulsione)
+#   tod-usb dischi        Dischi (share/tod-dischi.py): formattare, partizionare, controllare
+#   tod-usb stato
+#
+# I comandi da terminale (lsblk, fdisk, mkfs…) li gestisce share/bin/tod-disco.
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+TH="${TOD_TERMUX_HOME:-$HOME}"
+DATA="$TH/.local/share/tod-usb"
+STATE="$TH/.local/state/tod"
+LOG="$STATE/usb.log"
+RUN="${TMPDIR:-/tmp}/tod-usb"
+LKLBIN="$DATA/tod-lkl"
+mkdir -p "$STATE" "$RUN"
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
+notify() { command -v notify-send >/dev/null && notify-send -i drive-removable-media "$1" "$2" || true; }
+# "Scheda SD" -> "scheda-sd": il nome dei canali di tod-lkl ($RUN/lkl-<alias>.sock) senza spazi né lettere
+# accentate ("UNITÀ USB" -> "unit---usb"). Byte per byte, come tod-volumi.py, tod-gettext.c, tod-lkl.c, tod-fs.c
+alias_of() { printf '%s' "$1" | LC_ALL=C tr ' /A-Z' '-_a-z' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g'; }
+
+is_storage() { # 0 se il dispositivo è un disco (chiede il permesso ad Android la prima volta)
+  local dev=$1 info
+  [[ $dev == file:* ]] && return 0   # disco finto delle prove (TOD_USB_FINTI)
+  grep -qxF "$dev" "$RUN/nondischi" 2>/dev/null && return 1
+  info=$(timeout 90 termux-usb -r -e "python3 $HERE/tod-usb-info.py" "$dev" 2>/dev/null)
+  [[ $info == *'"storage": true'* ]] && return 0
+  # tastiera, mouse, rete: non si richiede più. Solo se il dispositivo ha risposto davvero "non sono
+  # un disco": un errore (permesso negato, risposta vuota) non deve far ignorare un lettore di schede
+  if [[ $info == '{'*'"storage": false'*'}' ]]; then echo "$dev" >>"$RUN/nondischi"; fi
+  return 1
+}
+
+lkl_vivo() { # senza processi (read e kill sono di bash): il servizio lo chiama ogni 2 s per ogni disco
+  local p
+  [[ -f $RUN/lkl-$1.pid ]] && read -r p <"$RUN/lkl-$1.pid" && kill -0 "$p" 2>/dev/null
+}
+
+lkl_collega() { # un tod-lkl per il disco; lkl-dev-<id> ricorda il percorso. Stampa l'id
+  local dev=$1 id
+  id="usb$(( $(cat "$RUN/contatore" 2>/dev/null || echo 0) + 1 ))"; echo "${id#usb}" >"$RUN/contatore"
+  echo "$dev" >"$RUN/lkl-dev-$id"
+  rm -f "$RUN/lkl-$id.espulso"
+  if [[ $dev == file:* ]]; then
+    (setsid "$LKLBIN" --file "${dev#file:}" "$RUN" "$id" </dev/null >>"$LOG" 2>&1 &)
+  else
+    (setsid termux-usb -r -e "$LKLBIN $RUN $id" "$dev" </dev/null >>"$LOG" 2>&1 &)
+  fi
+  log "collegato $dev come $id (LKL)"
+  echo "$id"
+}
+
+lkl_aspetta() { # IDS: di solito le partizioni sono pronte in meno di un secondo: le si aspetta qui, senza il
+  # giro da 4 s; non quelle di un lettore senza scheda (lkl-<id>.vuoto) né di un tod-lkl già finito
+  local i id pronti
+  for i in $(seq 1 30); do
+    pronti=1
+    for id in "$@"; do
+      [[ -f $RUN/lkl-$id.volumi || -f $RUN/lkl-$id.vuoto ]] && continue
+      if ((i > 4)) && ! lkl_vivo "$id"; then continue; fi
+      pronti=0
+    done
+    ((pronti)) && return 0
+    sleep 0.2
+  done
+}
+
+lkl_ferma_tutti() { # dati scritti, partizioni smontate, programmi chiusi (fine sessione)
+  local f id i
+  for f in "$RUN"/lkl-dev-*; do
+    [[ -f $f ]] || continue
+    id=${f##*/lkl-dev-}
+    if lkl_vivo "$id"; then kill "$(cat "$RUN/lkl-$id.pid")" 2>/dev/null; fi
+  done
+  for i in $(seq 1 50); do
+    local vivi=0
+    for f in "$RUN"/lkl-dev-*; do [[ -f $f ]] && lkl_vivo "${f##*/lkl-dev-}" && vivi=1; done
+    ((vivi)) || break
+    sleep 0.1
+  done
+  rm -f "$RUN"/lkl-dev-* "$RUN"/lkl-*.volumi "$RUN"/lkl-*.espulso "$RUN"/lkl-*.vuoto
+}
+
+lkl_di() { # quale tod-lkl serve la partizione NOME (vuoto se nessuno)
+  local f
+  for f in "$RUN"/lkl-*.volumi; do
+    [[ -f $f ]] || continue
+    if cut -f1 "$f" | grep -qxF -- "$1"; then f=${f##*/lkl-}; echo "${f%.volumi}"; return 0; fi
+  done
+  return 0
+}
+
+espelli() { # smonta in sicurezza la partizione NOME. Il disco non torna ad Android: Android lo monterebbe a
+  # sua volta e, staccandolo, avviserebbe di una rimozione non sicura. Dopo l'ultima partizione tod-lkl
+  # chiude e il disco resta fuori (lkl-<id>.espulso) finché non si scollega.
+  local name=$1 id
+  id=$(lkl_di "$name")
+  [[ -n $id ]] || { echo "nessun disco di nome $name" >&2; return 1; }
+  printf 'espelli %s\n' "$name" | timeout 30 ncat -U "$RUN/lkl-$id.ctl" >/dev/null 2>&1 || true
+  rm -f "$RUN/vol-$(alias_of "$name")"
+  log "espulso $name"
+  notify "$name" "Puoi scollegare il disco."
+}
+
+monitor() { # i dischi in Esplora file come unità e volumi (tod-volumi.py): GIO lo trova da questi due file
+  local p=${PREFIX:-/data/data/com.termux/files/usr} m s
+  m="$p/share/gvfs/remote-volume-monitors/tod-dischi.monitor"
+  s="$p/share/dbus-1/services/org.gtk.vfs.TodVolumeMonitor.service"
+  mkdir -p "${m%/*}" "${s%/*}"
+  printf '[RemoteVolumeMonitor]\nName=GProxyVolumeMonitorTod\nDBusName=org.gtk.vfs.TodVolumeMonitor\nIsNative=false\n' >"$m.tmp"
+  printf '[D-BUS Service]\nName=org.gtk.vfs.TodVolumeMonitor\nExec=%s %s\n' "$p/bin/python3" "$HERE/tod-volumi.py" >"$s.tmp"
+  cmp -s "$m.tmp" "$m" && rm -f "$m.tmp" || mv -f "$m.tmp" "$m"
+  cmp -s "$s.tmp" "$s" && rm -f "$s.tmp" || mv -f "$s.tmp" "$s"
+  # un monitor partito prima di un aggiornamento di tod-volumi.py darebbe a Esplora file indirizzi
+  # vecchi ("impossibile montare"): si chiude, e GIO lo riavvia con il codice nuovo alla prima richiesta
+  python3 - "$HERE/tod-volumi.py" <<'PY'
+import os, signal, sys
+f = sys.argv[1]
+for d in os.listdir("/proc"):
+    try:
+        a = open(f"/proc/{d}/cmdline", "rb").read().split(b"\0")
+        if len(a) > 1 and a[1].decode() == f and os.stat(f"/proc/{d}").st_mtime < os.stat(f).st_mtime:
+            os.kill(int(d), signal.SIGTERM)
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass
+PY
+}
+
+dischi() { # Dischi (share/tod-dischi.py), senza tod-gettext.so (le traduzioni le fa da sé, e con i pulsanti di
+  # PyGObject quel modulo riempie il registro di avvisi) ma con tod-fs.so (/media/usb per "Apri").
+  # dischi-lkl.pid: intanto il servizio non apre Esplora file sui dischi nuovi
+  echo $$ >"$RUN/dischi-lkl.pid"
+  if [[ -f $DATA/tod-fs.so ]]; then LD_PRELOAD=$DATA/tod-fs.so python3 "$HERE/../tod-dischi.py" >>"$LOG" 2>&1
+  else env -u LD_PRELOAD python3 "$HERE/../tod-dischi.py" >>"$LOG" 2>&1; fi
+  rm -f "$RUN/dischi-lkl.pid"
+}
+
+orfani() { # tod-lkl e servizi rimasti da una sessione precedente (anche senza file pid):
+  # si riconoscono dagli argomenti esatti, mai da un testo che può stare nel comando di qualcun altro
+  local p
+  for p in $(python3 - "$RUN" <<'PY'
+import os, sys
+run = sys.argv[1]
+def stesso_tmp(pid):   # un servizio di un'altra cartella temporanea (i test) non è nostro
+    try:
+        env = open(f"/proc/{pid}/environ", "rb").read().split(b"\0")
+    except OSError:
+        return False
+    return ("TMPDIR=" + os.environ.get("TMPDIR", "/tmp")).encode() in env
+for d in os.listdir("/proc"):
+    if not d.isdigit():
+        continue
+    try:
+        a = open(f"/proc/{d}/cmdline", "rb").read().decode(errors="replace").split("\0")
+    except OSError:
+        continue
+    nome = os.path.basename(a[0]) if a else ""
+    if (nome == "tod-lkl" and len(a) > 2 and a[1] == run) or \
+       (len(a) > 2 and a[1].endswith("share/usb/tod-usb") and a[2] == "_sorveglia" and stesso_tmp(d)):   # solo il servizio vero: due che arrivano insieme non si chiudono a vicenda
+        print(d)
+PY
+); do
+    [[ $p == "$$" || $p == "$PPID" ]] || kill "$p" 2>/dev/null
+  done
+}
+
+ferma() { # fine della sessione: servizio chiuso, dati scritti e partizioni smontate
+  # (la chiusura passa di qui due volte: la seconda non trova niente e non scrive nel registro)
+  [[ -f $RUN/sorveglia.pid ]] || return 0
+  kill "$(cat "$RUN/sorveglia.pid")" 2>/dev/null
+  lkl_ferma_tutti
+  orfani
+  rm -f "$RUN/sorveglia.pid" "$RUN"/vol-* "$RUN/vols" "$RUN/volumi" "$RUN/espulsi" "$RUN/dischi.pid" "$RUN"/lkl-*
+  log "servizio fermato (fine della sessione)"
+}
+
+sorveglia() { # un solo servizio alla volta, garantito da un blocco (flock): due servizi partiti insieme
+  # (riavvio del desktop) si contendevano i dischi e le espulsioni si perdevano. Chi arriva prende il
+  # posto di quello vecchio: lo chiude e aspetta il blocco. -o: il blocco resta a flock, non passa ai
+  # figli del servizio (tod-lkl lo terrebbe anche dopo)
+  if ! flock -n "$RUN/sorveglia.lock" true; then
+    [[ -f $RUN/sorveglia.pid ]] && kill "$(cat "$RUN/sorveglia.pid")" 2>/dev/null
+    orfani
+  fi
+  exec flock -o -w 30 "$RUN/sorveglia.lock" bash "$HERE/tod-usb" _sorveglia
+}
+
+VISTI=""   # i dispositivi del giro prima: già decisi (collegati, non dischi, o falliti), non si richiedono
+
+usb_nuovi() { # DEVS: i dispositivi USB comparsi dall'ultimo giro e non ancora di nessuno, se sono dischi
+  # (i dischi espulsi restano fuori finché non spariscono dall'elenco, cioè finché non si scollegano;
+  # i "non dischi" si ricordano per posizione /dev/bus/usb/..., che può tornare con un disco)
+  local devs=$1 dev
+  if [[ -s $RUN/nondischi ]]; then
+    grep -xF -f <(printf '%s\n' $devs) "$RUN/nondischi" | sort -u >"$RUN/nondischi.n" 2>/dev/null
+    mv -f "$RUN/nondischi.n" "$RUN/nondischi"
+  fi
+  if [[ -f $RUN/espulsi ]]; then
+    grep -xF -f <(printf '%s\n' $devs) "$RUN/espulsi" >"$RUN/espulsi.n" 2>/dev/null; mv -f "$RUN/espulsi.n" "$RUN/espulsi"
+  fi
+  for dev in $devs; do
+    grep -qxF "$dev" <<<"$VISTI" && continue
+    grep -qxF "$dev" "$RUN/espulsi" 2>/dev/null && continue
+    # già di un tod-lkl. Con cat: grep su un nome che non c'è darebbe errore anche trovandolo
+    if cat "$RUN"/lkl-dev-* 2>/dev/null | grep -qxF "$dev"; then continue; fi
+    if is_storage "$dev"; then echo "$dev"; fi
+  done
+}
+
+voci() { # VOLS: le partizioni sono già cartelle in /media/usb (tod-fs.so) e Esplora file le vede dal monitor
+  # dei volumi (tod-volumi.py), montate: qui solo l'avviso e la finestra per i dischi nuovi
+  local vols=$1 name a f aperta=""
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    a=$(alias_of "$name")
+    [[ -f $RUN/vol-$a ]] && continue
+    echo "$name" >"$RUN/vol-$a"; log "in Esplora file: $name (/media/usb)"
+    if [[ -z $aperta ]] && ! { [[ -f $RUN/dischi-lkl.pid ]] && kill -0 "$(cat "$RUN/dischi-lkl.pid")" 2>/dev/null; }; then
+      aperta=1; notify "$name" "Pronta: la trovi in Esplora file."
+      (exo-open --launch FileManager "/media/usb/$name" >/dev/null 2>&1 &)
+    fi
+  done <<<"$vols"
+  for f in "$RUN"/vol-*; do
+    [[ -f $f ]] || continue
+    name=$(cat "$f")
+    grep -qxF -- "$name" <<<"$vols" || rm -f "$f"   # espulsa, tolta o rinominata
+  done
+}
+
+giro() { # DEVS: un giro del servizio
+  local devs=$1 f id dev vols nuovo
+  for f in "$RUN"/lkl-dev-*; do   # finiti: espulsi (restano fuori), scollegati, scheda cambiata (si riapre)
+    [[ -f $f ]] || continue
+    id=${f##*/lkl-dev-}; dev=$(cat "$f")
+    lkl_vivo "$id" && continue
+    if [[ -f $RUN/lkl-$id.espulso ]]; then echo "$dev" >>"$RUN/espulsi"; log "espulso $dev ($id)"
+    elif [[ -f $RUN/lkl-$id.riapri ]]; then VISTI=$(grep -vxF "$dev" <<<"$VISTI"); log "supporto cambiato in $dev ($id): lo riapro"
+    else log "chiuso $dev ($id)"; fi
+    rm -f "$f" "$RUN/lkl-$id.espulso" "$RUN/lkl-$id.riapri" "$RUN/lkl-$id.volumi"
+  done
+  local ids=()
+  for nuovo in $(usb_nuovi "$devs"); do ids+=("$(lkl_collega "$nuovo")"); done
+  if ((${#ids[@]})); then lkl_aspetta "${ids[@]}"; fi
+  cat "$RUN"/lkl-*.volumi 2>/dev/null >"$RUN/volumi.nuovo"
+  cmp -s "$RUN/volumi.nuovo" "$RUN/volumi" && rm -f "$RUN/volumi.nuovo" || mv -f "$RUN/volumi.nuovo" "$RUN/volumi"
+  touch "$RUN/volumi"   # per giro_serve: le partizioni lette fin qui
+  vols=$(cut -f1 "$RUN/volumi" 2>/dev/null)
+  voci "$vols"
+}
+
+pulisci_macchina() { # una volta: quel che restava della macchina dei dischi (QEMU), tolta il 21 ottobre 2026
+  local cfg="$TH/.ssh/config"
+  if [[ -f $cfg ]] && grep -q '^# tod-usb inizio$' "$cfg"; then sed -i '/^# tod-usb inizio$/,/^# tod-usb fine$/d' "$cfg"; fi
+  rm -f "$RUN"/canale-* "$RUN/alias" "$RUN/dbus.sock" "$RUN/sftp.sock" "$RUN/supporti" \
+    "${TMPDIR:-/tmp}/tod-usb-vm.pid" "${TMPDIR:-/tmp}/tod-usb-qmp.sock"
+}
+
+usb_firma() { # USB_FIRMA = i nomi in /sys/bus/usb/devices (Android ne mostra solo i nomi, non i dettagli):
+  # cambiano appena si collega o si scollega qualcosa. Senza processi (glob di bash); vuota se non leggibile
+  local n
+  USB_FIRMA=""
+  for n in "${TOD_USB_SYS:-/sys/bus/usb/devices}"/*; do
+    # -L: sono collegamenti verso cartelle che Android non lascia leggere (-e da solo era sempre falso:
+    # la firma restava "usb1 usb2" e la chiavetta si vedeva solo al controllo dei 60 s)
+    if [[ -L $n || -e $n ]]; then USB_FIRMA+="${n##*/} "; fi
+  done
+}
+
+attendi() { # attendi SECONDI, senza avviare sleep (read -t su una fifo che nessuno scrive)
+  if [[ -n ${ATTESA_FD:-} ]]; then
+    read -rt "$1" -u "$ATTESA_FD" _ || true
+  else
+    sleep "$1"
+  fi
+}
+
+da_chiedere() { # da_chiedere FIRMA_DI_PRIMA ULTIMA_RICHIESTA FINO_A → vero se è ora di chiamare termux-usb -l
+  # FINO_A: dopo un cambio di porte si richiede a ogni giro fino a quel momento, perché Android registra il
+  # dispositivo un attimo dopo il kernel: la prima risposta spesso non lo ha ancora (si aspettava i 60 s)
+  local passati=$((SECONDS - $2))
+  if [[ -z $USB_FIRMA ]]; then
+    ((passati >= 4))   # elenco non leggibile su questo telefono: come prima, ogni 4 s
+  else
+    [[ $USB_FIRMA != "$1" ]] || ((SECONDS < ${3:-0} || passati >= 60))
+  fi
+}
+
+giro_serve() { # vero se tra un controllo delle porte e l'altro serve un giro: un disco aperto è finito
+  # (espulso, scollegato, scheda cambiata) o ha partizioni nuove. Solo test di bash, nessun processo
+  local f
+  for f in "$RUN"/lkl-dev-*; do
+    [[ -f $f ]] || continue
+    lkl_vivo "${f##*/lkl-dev-}" || return 0
+  done
+  for f in "$RUN"/lkl-*.volumi; do
+    if [[ -f $f && $f -nt $RUN/volumi ]]; then return 0; fi
+  done
+  return 1
+}
+
+_sorveglia() { # il servizio vero (sotto il blocco): porte USB, dischi, espulsioni
+  echo $$ >"$RUN/sorveglia.pid"
+  monitor
+  orfani
+  rm -f "$RUN"/vol-* "$RUN/vols" "$RUN/espulsi" "$RUN"/lkl-*
+  pulisci_macchina
+  # per tod-run nel container: i programmi caricano tod-fs (glibc) e vedono /media/usb
+  : >"$RUN/lkl-attivo"
+  rm -f "$RUN/attesa.fifo"
+  if mkfifo "$RUN/attesa.fifo" 2>/dev/null && exec {ATTESA_FD}<>"$RUN/attesa.fifo"; then :; else ATTESA_FD=""; fi
+  # termux-usb -l avvia Java (Termux:API): ~5% di un core se chiamato ogni 4 s. Si chiama solo quando
+  # l'elenco di /sys cambia (e ogni 60 s per sicurezza); dove l'elenco non si legge, ogni 4 s come prima
+  local devs="" f prima="-" chiesto=-999 fino=0 prima_devs giro_fatto=$SECONDS
+  while :; do
+    usb_firma
+    # giro rimasto bloccato (un disco in errore può tenerlo fermo 50 s): un dispositivo ricollegato nella
+    # stessa porta intanto ha gli stessi nomi in /sys, quindi si chiede comunque ad Android per un po'
+    if ((SECONDS - giro_fatto > 4)); then fino=$((SECONDS + 12)); fi
+    if [[ -n ${TOD_USB_FINTI:-} ]]; then   # prove: solo dischi finti (file immagine, uno per riga)
+      devs=$(while read -r f; do [[ -f $f ]] && echo "file:$f"; done <"$TOD_USB_FINTI" 2>/dev/null | sort)
+      giro "$devs"; VISTI=$devs
+    elif da_chiedere "$prima" "$chiesto" "$fino"; then
+      if [[ $USB_FIRMA != "$prima" && $prima != "-" ]]; then
+        fino=$((SECONDS + 12)); log "porte USB cambiate: chiedo ad Android"
+      fi
+      prima=$USB_FIRMA chiesto=$SECONDS prima_devs=$devs
+      devs=$(timeout 30 termux-usb -l 2>/dev/null | tr -d '[]", ' | grep '^/dev/' | sort)
+      if [[ $devs != "$prima_devs" ]]; then fino=0; fi   # Android lo ha già: basta così
+      giro "$devs"; VISTI=$devs
+    else
+      # nessun cambio di porte: il giro solo se un disco aperto è cambiato (prima ogni volta: ~9% di un core)
+      # VISTI va rifatto anche qui: un "supporto cambiato" lo toglie da VISTI per riaprirlo una volta; senza,
+      # ogni chiusura successiva lo riapriva di nuovo (chiavetta in errore ricollegata ogni 3 s, 23 ottobre)
+      if giro_serve; then giro "$devs"; VISTI=$devs; fi
+    fi
+    giro_fatto=$SECONDS
+    attendi 2
+  done
+}
+
+case ${1:-stato} in
+  sorveglia) sorveglia ;;
+  _sorveglia) _sorveglia ;;
+  espelli) espelli "${2:?nome del disco}" ;;
+  dischi) dischi ;;
+  ferma) ferma ;;
+  riavvia)   # a mano (dal ponte o da una scheda di Termux): con l'ambiente del desktop di adesso, preso
+    # dal pannello; un ambiente vecchio (desktop riavviato) lascerebbe il servizio senza notifiche né
+    # Esplora file ("Could not connect")
+    pan=$(pgrep -f 'tod-barra.py' | sed -n 1p)   # la nostra barra (xfce4-panel non c'è più)
+    [[ -n $pan ]] || { echo "il desktop non è acceso" >&2; exit 1; }
+    eval "$(python3 - "$pan" <<'PY'
+import shlex, sys
+for kv in open(f"/proc/{sys.argv[1]}/environ", "rb").read().split(b"\0"):
+    if b"=" in kv:
+        k, v = kv.decode(errors="replace").split("=", 1)
+        if k.replace("_", "").isalnum():
+            print(f"export {k}={shlex.quote(v)}")
+PY
+)"
+    (setsid bash "$HERE/tod-usb" sorveglia </dev/null >>"$LOG" 2>&1 &)
+    echo "servizio dei dischi riavviato" ;;
+  monitor) monitor ;;   # dall'installazione: GIO legge questi file solo all'avvio di Esplora file
+  stato)
+    if [[ -x $LKLBIN ]]; then echo "tod-lkl: pronto"; else echo "tod-lkl: manca (tod usb prepara)"; fi
+    if [[ -f $RUN/sorveglia.pid ]] && kill -0 "$(cat "$RUN/sorveglia.pid")" 2>/dev/null; then echo "servizio: acceso"; else echo "servizio: spento"; fi
+    cut -f1,2,6 "$RUN"/lkl-*.volumi 2>/dev/null ;;
+  *) echo "uso: tod-usb sorveglia|riavvia|espelli NOME|dischi|ferma|stato" >&2; exit 2 ;;
+esac

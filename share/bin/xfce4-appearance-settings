@@ -1,0 +1,5 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# xfce4-appearance-settings (Termux On DeX): al posto del pannello di XFCE si aprono le Impostazioni, voce aspetto.
+# share/bin viene prima nel PATH della sessione (session_xstartup): vale per menu e tasto destro.
+
+exec python3 "$(dirname "$(readlink -f "$0")")/../tod-settings.py" aspetto

@@ -1,0 +1,826 @@
+diff --git a/lorie/src/main/cpp/lorie/InitOutput.c b/lorie/src/main/cpp/lorie/InitOutput.c
+index ee12186..ac746fc 100644
+--- a/lorie/src/main/cpp/lorie/InitOutput.c
++++ b/lorie/src/main/cpp/lorie/InitOutput.c
+@@ -43,6 +43,17 @@
+ 
+ #include "lorie.h"
+ 
++Bool todGlamorAttivo(void);   // tod-glamor.c
++Bool todGlamorPrepara(ScreenPtr screen);
++void todGlamorAggiorna(PixmapPtr pixmap, RegionPtr zona);
++PixmapPtr todGlamorCreaRadice(ScreenPtr screen, int width, int height, int depth);
++struct LorieBuffer *todGlamorRadice(void);
++void todGlamorPubblica(PixmapPtr radice, RegionPtr zona);
++void *todGlamorStaccaRadice(PixmapPtr pixmap);
++void todGlamorLiberaRadice(void *radice);
++PixmapPtr todGlamorPixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *fds, CARD16 width, CARD16 height,
++                                 const CARD32 *strides, const CARD32 *offsets, CARD8 depth, CARD8 bpp, CARD64 modifier);
++
+ #define DRM_FORMAT_MOD_LINEAR 0
+ 
+ extern void android_shmem_sysv_shm_force(uint8_t enable);
+@@ -120,8 +131,11 @@ typedef struct {
+     void *mem;
+ } LoriePixmapPriv;
+ 
+-#define LORIE_PIXMAP_PRIV_FROM_PIXMAP(pixmap) (pixmap ? ((LoriePixmapPriv*) exaGetPixmapDriverPrivate(pixmap)) : NULL)
+-#define LORIE_BUFFER_FROM_PIXMAP(pixmap) (pixmap ? ((LoriePixmapPriv*) exaGetPixmapDriverPrivate(pixmap))->buffer : NULL)
++// tod: con glamor EXA non c'è, quindi nessun dato privato di EXA
++#define LORIE_PIXMAP_PRIV_FROM_PIXMAP(pixmap) (pixmap && !todGlamorAttivo() ? ((LoriePixmapPriv*) exaGetPixmapDriverPrivate(pixmap)) : NULL)
++#define LORIE_BUFFER_FROM_PIXMAP(pixmap) (pixmap && !todGlamorAttivo() ? ((LoriePixmapPriv*) exaGetPixmapDriverPrivate(pixmap))->buffer : NULL)
++// tod: il buffer della radice che l'app mostra (con glamor lo tiene tod-glamor.c)
++#define LORIE_ROOT_BUFFER(pixmap) (todGlamorAttivo() ? todGlamorRadice() : LORIE_BUFFER_FROM_PIXMAP(pixmap))
+ 
+ static LorieBuffer *lorieEnsureGpuSampleable(PixmapPtr pixmap, int8_t type) {
+     LoriePixmapPriv *priv = LORIE_PIXMAP_PRIV_FROM_PIXMAP(pixmap);
+@@ -203,7 +217,7 @@ void lorieActivityConnected(void) {
+     pvfb->state->drawRequested = pvfb->state->cursor.updated = true;
+     pvfb->state->rendererRelock = pvfb->rendererRelock;
+     lorieSendSharedServerState(pvfb->stateFd);
+-    lorieRegisterBuffer(LORIE_BUFFER_FROM_PIXMAP(pScreenPtr->devPrivate));
++    lorieRegisterBuffer(LORIE_ROOT_BUFFER(pScreenPtr->devPrivate));
+ }
+ 
+ static Bool TrueNoop() { return TRUE; }
+@@ -566,10 +580,40 @@ static Bool lorieRedraw(__unused ClientPtr pClient, __unused void *closure) {
+ 
+     pvfb->state->waitForNextFrame = false;
+ 
++    // tod: prova sul server senza app (:5): la copia nella vetrina a ogni fotogramma come sul desktop vero
++    if (todGlamorAttivo() && getenv("TOD_PUBBLICA_SEMPRE")) {
++        if (RegionNotEmpty(DamageRegion(pvfb->damage)) && todGlamorRadice()) {
++            todGlamorPubblica(pScreenPtr->devPrivate, DamageRegion(pvfb->damage));
++            DamageEmpty(pvfb->damage);
++        }
++        return TRUE;
++    }
++
+     if (!lorieConnectionAlive(conn_fd) || !pvfb->state->surfaceAvailable)
+         return TRUE;
+ 
+     nonEmpty = RegionNotEmpty(DamageRegion(pvfb->damage));
++
++    if (todGlamorAttivo()) {
++        // tod: con glamor l'app legge la vetrina della radice, aggiornata qui una volta per fotogramma
++        LorieBuffer *rootBuffer = todGlamorRadice();
++        if (!rootBuffer)
++            return TRUE;
++        if (nonEmpty) {
++            // con il lucchetto dell'app: mentre copiamo nella vetrina l'app non la legge
++            lorie_mutex_lock(&pvfb->state->lock, &pvfb->state->lockingPid, conn_fd);
++            todGlamorPubblica(pScreenPtr->devPrivate, DamageRegion(pvfb->damage));
++            lorie_mutex_unlock(&pvfb->state->lock, &pvfb->state->lockingPid);
++            DamageEmpty(pvfb->damage);
++            pvfb->state->drawRequested = TRUE;
++        }
++        if (pvfb->state->drawRequested || pvfb->state->cursor.moved || pvfb->state->cursor.updated) {
++            pvfb->state->rootWindowTextureID = LorieBuffer_description(rootBuffer)->id;
++            pthread_cond_signal(rendererCond);
++        }
++        return TRUE;
++    }
++
+     priv = root ? exaGetPixmapDriverPrivate(root) : NULL;
+ 
+     if (!priv)
+@@ -609,7 +653,103 @@ static Bool lorieRedraw(__unused ClientPtr pClient, __unused void *closure) {
+ static uint64_t gpuCopyAttempts = 0, gpuCopyOffloads = 0;
+ static uint64_t gpuCopyFallbackRects = 0, gpuCopyFallbackQueueFull = 0, gpuCopyFallbackOther = 0;
+ 
++// tod: misura del tempo speso per tipo di richiesta X (TERMUX_X11_MISURA=1), scritta ogni 5 s nel registro
++#include "extnsionst.h"
++static int (*todOrig[256])(ClientPtr);
++static uint64_t todNs[256][64];
++static uint32_t todCnt[256][64];
++static uint64_t todTot, todInizioThread, todInizioMuro;
++static uint64_t todBlocco, todRisveglio;
++static ScreenBlockHandlerProcPtr todBlockOrig;
++static ScreenWakeupHandlerProcPtr todWakeupOrig;
++static uint64_t todOra(clockid_t c);
++
++static void todBlockMisurato(ScreenPtr s, void *timeout) {
++    uint64_t a = todOra(CLOCK_THREAD_CPUTIME_ID);
++    s->BlockHandler = todBlockOrig;
++    s->BlockHandler(s, timeout);
++    todBlockOrig = s->BlockHandler;
++    s->BlockHandler = todBlockMisurato;
++    todBlocco += todOra(CLOCK_THREAD_CPUTIME_ID) - a;
++}
++
++static void todWakeupMisurato(ScreenPtr s, int result) {
++    uint64_t a = todOra(CLOCK_THREAD_CPUTIME_ID);
++    s->WakeupHandler = todWakeupOrig;
++    s->WakeupHandler(s, result);
++    todWakeupOrig = s->WakeupHandler;
++    s->WakeupHandler = todWakeupMisurato;
++    todRisveglio += todOra(CLOCK_THREAD_CPUTIME_ID) - a;
++}
++
++static uint64_t todOra(clockid_t c) {
++    struct timespec t;
++    clock_gettime(c, &t);
++    return (uint64_t) t.tv_sec * 1000000000ull + t.tv_nsec;
++}
++
++static int todMisurata(ClientPtr client) {
++    int maj = client->majorOp, min = maj >= EXTENSION_BASE ? client->minorOp & 63 : 0, r;
++    uint64_t a = todOra(CLOCK_THREAD_CPUTIME_ID), d;
++    r = todOrig[maj](client);
++    d = todOra(CLOCK_THREAD_CPUTIME_ID) - a;
++    todNs[maj][min] += d;
++    todCnt[maj][min]++;
++    todTot += d;
++    return r;
++}
++
++static void todMisuraTick(void) {
++    static int attiva = -1;
++    if (attiva < 0) {
++        const char *e = getenv("TERMUX_X11_MISURA");
++        attiva = e && !strcmp(e, "1");
++        if (attiva) {
++            for (int i = 1; i < 256; i++)
++                if (ProcVector[i] && ProcVector[i] != todMisurata) {
++                    todOrig[i] = ProcVector[i];
++                    ProcVector[i] = todMisurata;
++                }
++            todBlockOrig = pScreenPtr->BlockHandler;
++            pScreenPtr->BlockHandler = todBlockMisurato;
++            todWakeupOrig = pScreenPtr->WakeupHandler;
++            pScreenPtr->WakeupHandler = todWakeupMisurato;
++            todInizioThread = todOra(CLOCK_THREAD_CPUTIME_ID);
++            todInizioMuro = todOra(CLOCK_MONOTONIC);
++            log(INFO, "tod-misura: attiva");
++        }
++        return;
++    }
++    if (!attiva)
++        return;
++    uint64_t thr = todOra(CLOCK_THREAD_CPUTIME_ID) - todInizioThread, muro = todOra(CLOCK_MONOTONIC) - todInizioMuro;
++    log(INFO, "tod-misura: filo del server %.0f%% di un core, richieste X %.0f%%, prima dell'attesa %.0f%%, al risveglio %.0f%%, resto %.0f%%",
++        100.0 * thr / muro, 100.0 * todTot / muro, 100.0 * todBlocco / muro, 100.0 * todRisveglio / muro,
++        100.0 * (thr > todTot + todBlocco + todRisveglio ? thr - todTot - todBlocco - todRisveglio : 0) / muro);
++    todBlocco = todRisveglio = 0;
++    for (int n = 0; n < 8; n++) {   // le 8 voci più costose
++        int bi = -1, bj = 0;
++        for (int i = 0; i < 256; i++)
++            for (int j = 0; j < 64; j++)
++                if (todNs[i][j] && (bi < 0 || todNs[i][j] > todNs[bi][bj]))
++                    bi = i, bj = j;
++        if (bi < 0)
++            break;
++        ExtensionEntry *ext = bi >= EXTENSION_BASE ? GetExtensionEntry(bi) : NULL;
++        log(INFO, "tod-misura:   %s %d/%d: %.1f%% di un core, %u volte, %.0f us l'una",
++            ext ? ext->name : "core", bi, bj, 100.0 * todNs[bi][bj] / muro, todCnt[bi][bj],
++            todNs[bi][bj] / 1000.0 / todCnt[bi][bj]);
++        todNs[bi][bj] = 0;   // già scritta: fuori dalla prossima ricerca
++    }
++    memset(todNs, 0, sizeof(todNs));
++    memset(todCnt, 0, sizeof(todCnt));
++    todTot = 0;
++    todInizioThread = todOra(CLOCK_THREAD_CPUTIME_ID);
++    todInizioMuro = todOra(CLOCK_MONOTONIC);
++}
++
+ static CARD32 lorieFramecounter(unused OsTimerPtr timer, unused CARD32 time, unused void *arg) {
++    todMisuraTick();
+     if (pvfb->state->renderedFrames || gpuCopyAttempts)
+         log(INFO, gpuCopyAttempts ? "%d frames in 5.0 seconds = %.1f FPS, %llu/%llu present copies offloaded to GPU (CPU fallback: %llu too many rects, %llu queue full, %llu other)"
+                                    : "%d frames in 5.0 seconds = %.1f FPS",
+@@ -629,7 +769,9 @@ static CARD32 lorieHeartbeat(unused OsTimerPtr timer, unused CARD32 time, unused
+ }
+ 
+ static Bool lorieCreateScreenResources(ScreenPtr pScreen) {
+-    pScreen->devPrivate = pScreen->CreatePixmap(pScreen, pScreen->width, pScreen->height, pScreen->rootDepth, CREATE_PIXMAP_USAGE_LORIEBUFFER_BACKED);
++    pScreen->devPrivate = todGlamorAttivo()   // tod: con glamor la radice è un AHardwareBuffer in cui disegna la GPU
++        ? todGlamorCreaRadice(pScreen, pScreen->width, pScreen->height, pScreen->rootDepth)
++        : pScreen->CreatePixmap(pScreen, pScreen->width, pScreen->height, pScreen->rootDepth, CREATE_PIXMAP_USAGE_LORIEBUFFER_BACKED);
+ 
+     pvfb->damage = DamageCreate(NULL, NULL, DamageReportNone, TRUE, pScreen, NULL);
+     if (!pvfb->damage)
+@@ -640,13 +782,23 @@ static Bool lorieCreateScreenResources(ScreenPtr pScreen) {
+     TimerSet(NULL, 0, 1000, lorieHeartbeat, NULL);
+     RegisterBlockAndWakeupHandlers(lorieBlockHandler, (ServerWakeupHandlerProcPtr) NoopDDA, NULL);
+ 
+-    lorieRegisterBuffer(LORIE_BUFFER_FROM_PIXMAP(pScreenPtr->devPrivate));
++    lorieRegisterBuffer(LORIE_ROOT_BUFFER(pScreenPtr->devPrivate));
+ 
+     return TRUE;
+ }
+ 
+ static Bool lorieCloseScreen(ScreenPtr pScreen) {
+     pScreenPtr = NULL;
++    if (todGlamorAttivo()) {
++        // tod: con glamor la radice la distrugge la chiusura stessa (glamor rimette prima i suoi DestroyPixmap;
++        // distruggerla qui passava per quello di MIT-SHM, già liberato). Il suo AHardwareBuffer si libera dopo.
++        void *radice = todGlamorStaccaRadice(pScreen->devPrivate);
++        Bool r;
++        pScreen->CloseScreen = pvfb->CloseScreen;
++        r = pScreen->CloseScreen(pScreen);
++        todGlamorLiberaRadice(radice);
++        return r;
++    }
+     pScreen->DestroyPixmap(pScreen->devPrivate);
+     pScreen->devPrivate = NULL;
+     pScreen->CloseScreen = pvfb->CloseScreen;
+@@ -706,7 +858,9 @@ static Bool lorieRRScreenSetSize(ScreenPtr pScreen, CARD16 width, CARD16 height,
+     pScreen->mmHeight = ((double) (height)) * 25.4 / monitorResolution;
+ 
+     oldPixmap = pScreen->GetScreenPixmap(pScreen);
+-    newPixmap = pScreen->CreatePixmap(pScreen, width, height, pScreen->rootDepth, CREATE_PIXMAP_USAGE_LORIEBUFFER_BACKED);
++    newPixmap = todGlamorAttivo()   // tod
++        ? todGlamorCreaRadice(pScreen, width, height, pScreen->rootDepth)
++        : pScreen->CreatePixmap(pScreen, width, height, pScreen->rootDepth, CREATE_PIXMAP_USAGE_LORIEBUFFER_BACKED);
+     pScreen->SetScreenPixmap(newPixmap);
+     if (pvfb->damage) {
+         DamageUnregister(pvfb->damage);
+@@ -730,7 +884,7 @@ static Bool lorieRRScreenSetSize(ScreenPtr pScreen, CARD16 width, CARD16 height,
+         pScreen->DestroyPixmap(oldPixmap);
+     }
+ 
+-    lorieRegisterBuffer(LORIE_BUFFER_FROM_PIXMAP(pScreenPtr->devPrivate));
++    lorieRegisterBuffer(LORIE_ROOT_BUFFER(pScreenPtr->devPrivate));
+ 
+     pScreen->ResizeWindow(pScreen->root, 0, 0, width, height, NULL);
+     RegionReset(&pScreen->root->winSize, &box);
+@@ -808,6 +962,12 @@ static Bool lorieScreenInit(ScreenPtr pScreen, unused int argc, unused char **ar
+     static int eventFd = -1;
+     pScreenPtr = pScreen;
+ 
++    if (todGlamorAttivo()) {
++        // tod: con glamor niente copie Present sulla GPU dell'app (usano i dati di EXA) e DRI3 importato da glamor
++        pvfb->gpuPresentDisabled = TRUE;
++        lorieDri3Info.pixmap_from_fds = todGlamorPixmapFromFds;
++    }
++
+     if (eventFd == -1)
+         eventFd = eventfd(0, EFD_CLOEXEC);
+ 
+@@ -827,7 +987,7 @@ static Bool lorieScreenInit(ScreenPtr pScreen, unused int argc, unused char **ar
+           || !(pScreen->CreateScreenResources = lorieCreateScreenResources) // Simply replace unneeded function
+           || !(!pvfb->dri3 || dri3_screen_init(pScreen, &lorieDri3Info))
+           || !fbPictureInit(pScreen, 0, 0)
+-          || !exaDriverInit(pScreen, &lorieExa)
++          || !(todGlamorAttivo() ? todGlamorPrepara(pScreen) : exaDriverInit(pScreen, &lorieExa))   // tod
+           || !lorieRandRInit(pScreen)
+           || !miPointerInitialize(pScreen, &loriePointerSpriteFuncs, &loriePointerCursorFuncs, TRUE)
+           || !fbCreateDefColormap(pScreen)
+@@ -976,6 +1136,13 @@ Bool lorieTryScheduleGpuCopy(PixmapPtr pixmap, PixmapPtr dst, RegionPtr update,
+     int numRects, i;
+     uint32_t writeIndex, readIndex;
+ 
++    if (todGlamorAttivo()) {   // tod: glamor fa la copia da sé; prima si aggiorna l'immagine importata
++        todGlamorAggiorna(pixmap, update);
++        gpuCopyAttempts++;
++        gpuCopyFallbackOther++;
++        return FALSE;
++    }
++
+     if (pvfb->gpuPresentDisabled || pvfb->root.legacyDrawing) {
+         gpuCopyAttempts++;
+         gpuCopyFallbackOther++;
+@@ -1100,6 +1267,10 @@ void lorieGpuCopyAck(PixmapPtr pixmap, void *dst_buffer) {
+ }
+ 
+ Bool loriePresentFlip(__unused RRCrtcPtr crtc, __unused uint64_t event_id, __unused uint64_t target_msc, PixmapPtr pixmap, __unused Bool sync_flip) {
++    // tod: con glamor niente flip (qui non ci sono i dati di EXA: si leggeva memoria a caso, e un flip accettato
++    // lasciava la vetrina sulla radice vecchia → fotogrammi vecchi per un attimo). La copia la fa la GPU.
++    if (todGlamorAttivo())
++        return FALSE;
+     LoriePixmapPriv* priv = (LoriePixmapPriv*) exaGetPixmapDriverPrivate(pixmap);
+     if (!priv || !priv->buffer || priv->mem || pvfb->root.width != pixmap->drawable.width || pvfb->root.height != pixmap->drawable.height)
+         return FALSE;
+diff --git a/lorie/src/main/cpp/recipes/xserver.cmake b/lorie/src/main/cpp/recipes/xserver.cmake
+index 6faa562..ba9268b 100644
+--- a/lorie/src/main/cpp/recipes/xserver.cmake
++++ b/lorie/src/main/cpp/recipes/xserver.cmake
+@@ -270,7 +270,9 @@ add_library(xserver_glxvnd STATIC ${GLXVND_SOURCES})
+ target_include_directories(xserver_glxvnd PRIVATE ${inc})
+ target_compile_options(xserver_glxvnd PRIVATE ${c_only_compile_options} ${compile_options})
+ 
++include(recipes/glamor.cmake)   # tod
+ set(XSERVER_LIBS tirpc Xdmcp Xau pixman Xfont2 fontenc GLESv2 xshmfence xkbcomp)
++set(XSERVER_LIBS ${XSERVER_LIBS} ${TOD_GLAMOR_LIBS})   # tod
+ foreach (part glx glxvnd fb mi dix composite damageext dbe randr miext_damage render present xext
+          dri3 miext_sync xfixes xi xkb record xi_stubs xkb_stubs os exa)
+     set(XSERVER_LIBS ${XSERVER_LIBS} xserver_${part})
+diff --git a/lorie/src/main/cpp/lorie/tod-glamor.c b/lorie/src/main/cpp/lorie/tod-glamor.c
+new file mode 100644
+index 0000000..d29e8a5
+--- /dev/null
++++ b/lorie/src/main/cpp/lorie/tod-glamor.c
+@@ -0,0 +1,464 @@
++// tod: collegamento tra glamor (composizione X con la GPU) e Android.
++// Acceso solo con TERMUX_X11_GLAMOR=1: il server apre un suo contesto GLES 3 (EGL di Android, senza superficie)
++// e glamor prende il posto di EXA, cioè del disegno con la CPU. Senza la variabile non cambia niente.
++// Tappa 2a: la radice è una texture di glamor (non ancora l'AHardwareBuffer che l'app mostra).
++// DRI3: le immagini dei client (Turnip: dma-buf LINEAR) sono mappate in memoria e glamor le carica sulla GPU
++// quando servono (una copia, ma la composizione è sulla GPU). Android non ha EGL_EXT_image_dma_buf_import.
++
++#include <epoxy/egl.h>
++#include <epoxy/gl.h>
++#include <dix-config.h>
++#include <android/log.h>
++#include <stdlib.h>
++#include <time.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/ioctl.h>
++#include <fcntl.h>
++#include <linux/dma-buf.h>
++#include <android/hardware_buffer.h>
++#include <unistd.h>
++#ifndef DRM_FORMAT_MOD_LINEAR
++#define DRM_FORMAT_MOD_LINEAR 0ULL
++#endif
++#ifndef DRM_FORMAT_MOD_INVALID
++#define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
++#endif
++#include "glamor_priv.h"
++#include "buffer.h"
++
++#define log(prio, ...) __android_log_print(ANDROID_LOG_ ## prio, "LorieNative", __VA_ARGS__)
++
++static EGLDisplay todDpy = EGL_NO_DISPLAY;
++static EGLContext todCtx = EGL_NO_CONTEXT;
++
++// DRI3: ogni immagine importata (dma-buf lineare di Turnip) è mappata in memoria. Con glamor:
++//  - via AHardwareBuffer (predefinita): un AHardwareBuffer lineare della stessa misura, che la GPU legge come
++//    texture (EGLImage); a ogni Present ci si copiano solo le zone cambiate (todGlamorAggiorna, memcpy);
++//  - ripiego, o con TERMUX_X11_GLAMOR_COPIA=1: immagine in memoria, che glamor carica da sé a ogni uso.
++// (Android non ha EGL_EXT_image_dma_buf_import, e Adreno rifiuta texture su memoria di Turnip importata con
++// GL_EXT_memory_object_fd: provato il 29 ottobre.)
++typedef struct {
++    void *mappa;
++    size_t lunghezza;
++    char *dati;             // inizio dell'immagine nella mappa
++    CARD32 passo;           // byte per riga nel dma-buf
++    int fd;                 // il dma-buf (per DMA_BUF_IOCTL_SYNC), -1 se non c'è
++    AHardwareBuffer *ahb;
++    EGLImageKHR img;
++    LorieBuffer *lorie;     // solo la radice: la vetrina, possiede il suo AHardwareBuffer
++    GLuint vtex, vfb;       // texture e framebuffer della vetrina
++} TodMappa;
++static DevPrivateKeyRec todMappaKey;
++static LorieBuffer *todRadiceBuf;
++static DestroyPixmapProcPtr todDestroyPixmapOrig;
++
++static TodMappa *todMappa(PixmapPtr pixmap) {
++    return dixGetPrivateAddr(&pixmap->devPrivates, &todMappaKey);
++}
++
++static Bool todDestroyPixmap(PixmapPtr pixmap) {
++    ScreenPtr screen = pixmap->drawable.pScreen;
++    TodMappa m = *todMappa(pixmap);
++    Bool ultima = pixmap->refcnt == 1, r;
++    screen->DestroyPixmap = todDestroyPixmapOrig;
++    r = screen->DestroyPixmap(pixmap);
++    todDestroyPixmapOrig = screen->DestroyPixmap;
++    screen->DestroyPixmap = todDestroyPixmap;
++    if (!ultima)
++        return r;
++    if (m.vfb || m.vtex) {
++        glamor_make_current(glamor_get_screen_private(screen));
++        glDeleteFramebuffers(1, &m.vfb);
++        glDeleteTextures(1, &m.vtex);
++    }
++    if (m.img)
++        eglDestroyImageKHR(todDpy, m.img);
++    if (m.lorie) {
++        if (todRadiceBuf == m.lorie)
++            todRadiceBuf = NULL;
++        LorieBuffer_release(m.lorie);
++    } else if (m.ahb)
++        AHardwareBuffer_release(m.ahb);
++    if (m.mappa)
++        munmap(m.mappa, m.lunghezza);
++    if (m.fd > 0)
++        close(m.fd);
++    return r;
++}
++
++// copia nel suo AHardwareBuffer le zone indicate (coordinate dell'immagine), tutte se n == 0
++static void todCopia(TodMappa *m, int larghezza, int altezza, const BoxRec *box, int n) {
++    AHardwareBuffer_Desc d;
++    BoxRec tutto = { 0, 0, (short) larghezza, (short) altezza };
++    char *dst = NULL;
++
++    struct dma_buf_sync s = { DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
++
++    // 1) la GPU del server potrebbe ancora leggere il fotogramma precedente da questo AHardwareBuffer
++    glamor_make_current(glamor_get_screen_private(screenInfo.screens[0]));
++    glFinish();
++    if (AHardwareBuffer_lock(m->ahb, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, (void **) &dst) || !dst)
++        return;
++    // 2) la GPU del client potrebbe non aver finito di disegnare nel dma-buf: si aspetta (sincronizzazione implicita)
++    if (m->fd > 0)
++        ioctl(m->fd, DMA_BUF_IOCTL_SYNC, &s);
++    AHardwareBuffer_describe(m->ahb, &d);
++    if (n == 0) {
++        box = &tutto;
++        n = 1;
++    }
++    for (int i = 0; i < n; i++) {
++        int x1 = max(box[i].x1, 0), y1 = max(box[i].y1, 0), x2 = min(box[i].x2, larghezza), y2 = min(box[i].y2, altezza);
++        if (x2 <= x1)
++            continue;
++        for (int y = y1; y < y2; y++)
++            memcpy(dst + ((size_t) y * d.stride + x1) * 4, m->dati + (size_t) y * m->passo + x1 * 4, (size_t) (x2 - x1) * 4);
++    }
++    if (m->fd > 0) {
++        s.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
++        ioctl(m->fd, DMA_BUF_IOCTL_SYNC, &s);
++    }
++    AHardwareBuffer_unlock(m->ahb, NULL);
++}
++
++// Dal gancio di Present (lorieTryScheduleGpuCopy), prima che il contenuto dell'immagine venga usato.
++// Si copia sempre l'immagine intera, non solo la zona dichiarata nel Present: i client (Chromium/Electron,
++// Mesa) usano 2-3 buffer a turno e in ognuno ridisegnano ciò che è cambiato dall'ultima volta che hanno usato
++// QUEL buffer, più di quanto dichiarano (29 ottobre: in un'app Electron ricomparivano pezzi di fotogrammi vecchi).
++void todGlamorAggiorna(PixmapPtr pixmap, RegionPtr zona) {
++    TodMappa *m = todMappa(pixmap);
++    (void) zona;
++    if (!m->ahb)
++        return;
++    todCopia(m, pixmap->drawable.width, pixmap->drawable.height, NULL, 0);
++}
++
++static PixmapPtr todImportaAhb(ScreenPtr screen, TodMappa *m, CARD16 width, CARD16 height, CARD8 depth) {
++    static int stato = -1;   // -1 da provare, 0 non va, 1 va
++    static const EGLint attr[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
++    const char *e = getenv("TERMUX_X11_GLAMOR_COPIA");
++    AHardwareBuffer_Desc d = { .width = width, .height = height, .layers = 1,
++                               .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
++                               .usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE };
++    PixmapPtr pixmap = NullPixmap;
++    glamor_pixmap_fbo *fbo;
++    GLuint tex = 0;
++    GLint err;
++
++    if (stato == 0 || (e && !strcmp(e, "1")))
++        return NullPixmap;
++    // l'immagine del client è BGRA in memoria: AHardwareBuffer RGBA8 e canali B/R scambiati in lettura
++    if (AHardwareBuffer_allocate(&d, &m->ahb) || !m->ahb) {
++        log(ERROR, "tod-glamor: AHardwareBuffer %ux%u non allocato", width, height);
++        m->ahb = NULL;
++        goto fallito;
++    }
++    glamor_make_current(glamor_get_screen_private(screen));
++    while (glGetError() != GL_NO_ERROR) ;
++    m->img = eglCreateImageKHR(todDpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
++                               eglGetNativeClientBufferANDROID(m->ahb), attr);
++    if (!m->img) {
++        log(ERROR, "tod-glamor: EGLImage non creata (0x%x)", eglGetError());
++        goto fallito;
++    }
++    glGenTextures(1, &tex);
++    glBindTexture(GL_TEXTURE_2D, tex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, m->img);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    if ((err = glGetError()) != GL_NO_ERROR) {
++        log(ERROR, "tod-glamor: texture sull'AHardwareBuffer non riuscita (0x%x)", err);
++        goto fallito;
++    }
++    todCopia(m, width, height, NULL, 0);
++    pixmap = glamor_create_pixmap(screen, width, height, depth, GLAMOR_CREATE_PIXMAP_NO_TEXTURE);
++    if (!pixmap)
++        goto fallito;
++    glamor_set_pixmap_type(pixmap, GLAMOR_TEXTURE_DRM);
++    if (!(fbo = glamor_create_fbo_from_tex(glamor_get_screen_private(screen), pixmap, width, height, tex, 0))) {
++        log(ERROR, "tod-glamor: glamor non accetta la texture");
++        goto fallito;
++    }
++    tex = 0;   // ora è di glamor
++    glamor_pixmap_attach_fbo(pixmap, fbo);
++    *todMappa(pixmap) = *m;
++    if (stato < 0)
++        log(INFO, "tod-glamor: DRI3 via AHardwareBuffer attivo (%ux%u)", width, height);
++    stato = 1;
++    return pixmap;
++
++fallito:
++    if (pixmap)
++        screen->DestroyPixmap(pixmap);   // la mappa resta al chiamante: qui m non è ancora dell'immagine
++    if (tex)
++        glDeleteTextures(1, &tex);
++    if (m->img)
++        eglDestroyImageKHR(todDpy, m->img);
++    if (m->ahb)
++        AHardwareBuffer_release(m->ahb);
++    m->img = NULL;
++    m->ahb = NULL;
++    if (stato < 0)
++        stato = 0;
++    return NullPixmap;
++}
++
++PixmapPtr todGlamorPixmapFromFds(ScreenPtr screen, CARD8 num_fds, const int *fds, CARD16 width, CARD16 height,
++                                 const CARD32 *strides, const CARD32 *offsets, CARD8 depth, CARD8 bpp, CARD64 modifier) {
++    const CARD64 RAW_MMAPPABLE_FD = 1274;
++    TodMappa m = { 0 };
++    PixmapPtr pixmap;
++
++    if (num_fds != 1 || (modifier != DRM_FORMAT_MOD_INVALID && modifier != DRM_FORMAT_MOD_LINEAR && modifier != RAW_MMAPPABLE_FD)) {
++        log(ERROR, "tod-glamor: DRI3 rifiutato (%d fd, modifier %llu)", num_fds, (unsigned long long) modifier);
++        return NullPixmap;
++    }
++    m.lunghezza = (size_t) offsets[0] + (size_t) strides[0] * height;
++    m.mappa = mmap(NULL, m.lunghezza, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
++    if (m.mappa == MAP_FAILED) {
++        log(ERROR, "tod-glamor: DRI3 mmap non riuscito: %s", strerror(errno));
++        return NullPixmap;
++    }
++    m.dati = (char *) m.mappa + offsets[0];
++    m.passo = strides[0];
++    m.fd = fcntl(fds[0], F_DUPFD_CLOEXEC, 3);
++    if ((pixmap = todImportaAhb(screen, &m, width, height, depth)))
++        return pixmap;
++    pixmap = screen->CreatePixmap(screen, 0, 0, depth, GLAMOR_CREATE_PIXMAP_CPU);
++    if (!pixmap) {
++        if (m.fd > 0)
++            close(m.fd);
++        munmap(m.mappa, m.lunghezza);
++        return NullPixmap;
++    }
++    screen->ModifyPixmapHeader(pixmap, width, height, depth, bpp, strides[0], m.dati);
++    *todMappa(pixmap) = m;
++    return pixmap;
++}
++
++struct LorieBuffer *todGlamorRadice(void) {
++    return todRadiceBuf;
++}
++
++
++// La radice in due copie ("doppio buffer", come i compositori): glamor disegna in una sua immagine normale;
++// la "vetrina" è un AHardwareBuffer BGRA (come i pixel di X: l'app lo mostra senza scambiare i canali) che l'app
++// legge con il suo id. Una volta per fotogramma todGlamorPubblica copia lì, con la GPU, solo le zone cambiate,
++// sotto il lucchetto condiviso con l'app: così l'app non vede mai un disegno a metà (29 ottobre: con una sola
++// copia, scritta mentre l'app la leggeva, c'erano glitch).
++PixmapPtr todGlamorCreaRadice(ScreenPtr screen, int width, int height, int depth) {
++    static const EGLint attr[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
++    AHardwareBuffer_Desc d = { .width = width, .height = height, .layers = 1,
++                               .format = AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM,
++                               .usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
++                                        AHARDWAREBUFFER_USAGE_CPU_READ_RARELY | AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY };
++    AHardwareBuffer *ahb = NULL;
++    LorieBuffer *lorie;
++    EGLImageKHR img;
++    PixmapPtr pixmap;
++    GLuint tex, fb;
++    GLint err;
++    TodMappa *m;
++
++    pixmap = glamor_create_pixmap(screen, width, height, depth, 0);
++    if (!pixmap || !glamor_get_pixmap_private(pixmap)->fbo)
++        FatalError("tod-glamor: radice %dx%d: immagine di glamor non creata\n", width, height);
++    if (AHardwareBuffer_allocate(&d, &ahb) || !ahb)
++        FatalError("tod-glamor: radice %dx%d: AHardwareBuffer BGRA non allocato\n", width, height);
++    if (!(lorie = LorieBuffer_wrapAHardwareBuffer(ahb)))
++        FatalError("tod-glamor: radice: LorieBuffer non creato\n");
++    glamor_make_current(glamor_get_screen_private(screen));
++    while (glGetError() != GL_NO_ERROR) ;
++    img = eglCreateImageKHR(todDpy, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, eglGetNativeClientBufferANDROID(ahb), attr);
++    if (!img)
++        FatalError("tod-glamor: radice: EGLImage non creata (0x%x)\n", eglGetError());
++    glGenTextures(1, &tex);
++    glBindTexture(GL_TEXTURE_2D, tex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
++    glGenFramebuffers(1, &fb);
++    glBindFramebuffer(GL_FRAMEBUFFER, fb);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
++    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || (err = glGetError()) != GL_NO_ERROR)
++        FatalError("tod-glamor: radice: vetrina non utilizzabile\n");
++    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++    m = todMappa(pixmap);
++    m->ahb = ahb;
++    m->img = img;
++    m->lorie = lorie;
++    m->vtex = tex;
++    m->vfb = fb;
++    todRadiceBuf = lorie;
++    log(INFO, "tod-glamor: radice %dx%d con vetrina AHardwareBuffer BGRA (id %llu)", width, height,
++        (unsigned long long) LorieBuffer_description(lorie)->id);
++    return pixmap;
++}
++
++// Da lorieRedraw, con il lucchetto dell'app preso: copia nella vetrina le zone cambiate e aspetta la GPU.
++void todGlamorPubblica(PixmapPtr radice, RegionPtr zona) {
++    static int errori;
++    glamor_pixmap_private *priv;
++    TodMappa *m;
++    BoxPtr b;
++    int n;
++    GLint err;
++
++    if (!radice || !(m = todMappa(radice))->vfb || !(priv = glamor_get_pixmap_private(radice)) || !priv->fbo)
++        return;
++    glamor_make_current(glamor_get_screen_private(radice->drawable.pScreen));
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, priv->fbo->fb);
++    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m->vfb);
++    // Si copia tutta la radice, non solo le zone segnate come cambiate (29 ottobre: con le sole zone, passando il
++    // fuoco dal desktop a un'app Electron, l'app mostrava per un fotogramma la finestra a bande spostate). Per la GPU è poco.
++    // TERMUX_X11_GLAMOR_ZONE=1: solo le zone (per confronto).
++    {
++        const char *e = getenv("TERMUX_X11_GLAMOR_ZONE");
++        if (e && !strcmp(e, "1")) {
++            b = RegionRects(zona);
++            n = RegionNumRects(zona);
++            for (int i = 0; i < n; i++)
++                glBlitFramebuffer(b[i].x1, b[i].y1, b[i].x2, b[i].y2, b[i].x1, b[i].y1, b[i].x2, b[i].y2,
++                                  GL_COLOR_BUFFER_BIT, GL_NEAREST);
++        } else {
++            int w = radice->drawable.width, h = radice->drawable.height;
++            glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++        }
++    }
++    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++    glFinish();
++    if ((err = glGetError()) != GL_NO_ERROR && errori++ < 5)
++        log(ERROR, "tod-glamor: copia nella vetrina non riuscita (0x%x)", err);
++}
++
++// Chiusura dello schermo: le risorse della radice escono dalla sua immagine (che distruggerà la chiusura stessa)
++// e si liberano dopo, con todGlamorLiberaRadice.
++void *todGlamorStaccaRadice(PixmapPtr pixmap) {
++    TodMappa *m, *copia;
++    if (!pixmap || !(copia = malloc(sizeof(*copia))))
++        return NULL;
++    m = todMappa(pixmap);
++    *copia = *m;
++    memset(m, 0, sizeof(*m));
++    return copia;
++}
++
++void todGlamorLiberaRadice(void *radice) {
++    TodMappa *m = radice;
++    if (!m)
++        return;
++    if ((m->vfb || m->vtex) && eglGetCurrentContext() == todCtx) {
++        glDeleteFramebuffers(1, &m->vfb);
++        glDeleteTextures(1, &m->vtex);
++    }
++    if (m->img)
++        eglDestroyImageKHR(todDpy, m->img);
++    if (m->lorie) {
++        if (todRadiceBuf == m->lorie)
++            todRadiceBuf = NULL;
++        LorieBuffer_release(m->lorie);
++    }
++    free(m);
++}
++
++Bool todGlamorAttivo(void) {
++    static int attivo = -1;
++    if (attivo < 0) {
++        const char *e = getenv("TERMUX_X11_GLAMOR");
++        attivo = e && !strcmp(e, "1");
++    }
++    return attivo;
++}
++
++static void todMakeCurrent(struct glamor_context *c) {
++    if (eglGetCurrentContext() != c->ctx)
++        eglMakeCurrent(c->display, EGL_NO_SURFACE, EGL_NO_SURFACE, c->ctx);
++}
++
++// Chiamata da glamor_init (GLAMOR_USE_EGL_SCREEN): gli diamo il nostro contesto.
++void glamor_egl_screen_init(ScreenPtr screen, struct glamor_context *glamor_ctx) {
++    glamor_ctx->display = todDpy;
++    glamor_ctx->ctx = todCtx;
++    glamor_ctx->drawable = EGL_NO_SURFACE;
++    glamor_ctx->make_current = todMakeCurrent;
++}
++
++static EGLContext todCreaContesto(EGLDisplay dpy) {
++    static const EGLint attr[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
++    static const EGLint scelta[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE };
++    EGLConfig cfg = NULL;
++    EGLint n = 0;
++    EGLContext ctx;
++
++    if (epoxy_has_egl_extension(dpy, "EGL_KHR_no_config_context") &&
++        (ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attr)) != EGL_NO_CONTEXT)
++        return ctx;
++    if (!eglChooseConfig(dpy, scelta, &cfg, 1, &n) || n < 1)
++        return EGL_NO_CONTEXT;
++    return eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, attr);
++}
++
++// Al posto di exaDriverInit, dopo fbScreenInit e fbPictureInit.
++Bool todGlamorPrepara(ScreenPtr screen) {
++    EGLint maj = 0, min = 0;
++
++    todDpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
++    if (todDpy == EGL_NO_DISPLAY || !eglInitialize(todDpy, &maj, &min)) {
++        log(ERROR, "tod-glamor: eglInitialize non riuscito (0x%x)", eglGetError());
++        return FALSE;
++    }
++    eglBindAPI(EGL_OPENGL_ES_API);
++    if (!epoxy_has_egl_extension(todDpy, "EGL_KHR_surfaceless_context")) {
++        log(ERROR, "tod-glamor: manca EGL_KHR_surfaceless_context");
++        return FALSE;
++    }
++    if ((todCtx = todCreaContesto(todDpy)) == EGL_NO_CONTEXT ||
++        !eglMakeCurrent(todDpy, EGL_NO_SURFACE, EGL_NO_SURFACE, todCtx)) {
++        log(ERROR, "tod-glamor: contesto GLES 3 non creato (0x%x)", eglGetError());
++        return FALSE;
++    }
++    log(INFO, "tod-glamor: EGL %d.%d, %s, %s", maj, min, glGetString(GL_RENDERER), glGetString(GL_VERSION));
++    {
++        static const char *egl[] = { "EGL_EXT_image_dma_buf_import", "EGL_EXT_image_dma_buf_import_modifiers",
++                                     "EGL_ANDROID_image_native_buffer", "EGL_ANDROID_get_native_client_buffer",
++                                     "EGL_KHR_image_base", "EGL_KHR_fence_sync", "EGL_ANDROID_native_fence_sync" };
++        static const char *gl[] = { "GL_OES_EGL_image", "GL_OES_EGL_image_external", "GL_EXT_memory_object",
++                                    "GL_EXT_memory_object_fd", "GL_EXT_semaphore_fd", "GL_EXT_EGL_image_storage" };
++        for (unsigned i = 0; i < sizeof(egl) / sizeof(*egl); i++)
++            log(INFO, "tod-glamor: %s %s", egl[i], epoxy_has_egl_extension(todDpy, egl[i]) ? "sì" : "no");
++        for (unsigned i = 0; i < sizeof(gl) / sizeof(*gl); i++)
++            log(INFO, "tod-glamor: %s %s", gl[i], epoxy_has_gl_extension(gl[i]) ? "sì" : "no");
++    }
++    if (!glamor_init(screen, GLAMOR_USE_EGL_SCREEN)) {
++        log(ERROR, "tod-glamor: glamor_init non riuscito (estensioni in logcat: %s)",
++            (const char *) glGetString(GL_EXTENSIONS));
++        return FALSE;
++    }
++    if (!dixRegisterPrivateKey(&todMappaKey, PRIVATE_PIXMAP, sizeof(TodMappa)))
++        return FALSE;
++    todDestroyPixmapOrig = screen->DestroyPixmap;
++    screen->DestroyPixmap = todDestroyPixmap;
++    log(INFO, "tod-glamor: glamor attivo");
++    return TRUE;
++}
++
++// Le altre funzioni che glamor si aspetta dal suo backend EGL di Xorg (qui non servono ancora).
++int glamor_egl_fd_name_from_pixmap(ScreenPtr screen, PixmapPtr pixmap, CARD16 *stride, CARD32 *size) {
++    return -1;
++}
++
++int glamor_egl_fds_from_pixmap(ScreenPtr screen, PixmapPtr pixmap, int *fds, uint32_t *offsets, uint32_t *strides,
++                               uint64_t *modifier) {
++    return 0;
++}
++
++int glamor_egl_fd_from_pixmap(ScreenPtr screen, PixmapPtr pixmap, CARD16 *stride, CARD32 *size) {
++    return -1;
++}
++
++// glamor sui PC può prendere il contesto da GLX; qui il contesto è sempre EGL di Android.
++Bool glamor_glx_screen_init(struct glamor_context *glamor_ctx) {
++    return FALSE;
++}
+diff --git a/lorie/src/main/cpp/recipes/glamor.cmake b/lorie/src/main/cpp/recipes/glamor.cmake
+new file mode 100644
+index 0000000..bdd1828
+--- /dev/null
++++ b/lorie/src/main/cpp/recipes/glamor.cmake
+@@ -0,0 +1,43 @@
++# tod: glamor (composizione X con la GPU) e la libepoxy vera che gli serve.
++# Incluso da xserver.cmake prima dell'elenco XSERVER_LIBS, aggiunge xserver_glamor ed epoxy a TOD_GLAMOR_LIBS.
++# I sorgenti generati di libepoxy (gl/egl_generated_dispatch.c e gli header) stanno in TOD_EPOXY_DIR
++# (fatti con lo script originale di libepoxy: la copia in libepoxy/src è modificata da termux-x11 per GLX).
++
++if (NOT TOD_EPOXY_DIR)
++    message(FATAL_ERROR "manca TOD_EPOXY_DIR (sorgenti generati di libepoxy)")
++endif ()
++
++file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/epoxy/config.h" CONTENT "
++#pragma once
++#define ENABLE_GLX 0
++#define ENABLE_EGL 1
++#define ENABLE_X11 0
++#define HAVE_KHRPLATFORM_H 0
++#define EPOXY_PUBLIC __attribute__((visibility(\"hidden\"))) extern
++")
++
++add_library(epoxy STATIC
++        "libepoxy/src/dispatch_common.c"
++        "libepoxy/src/dispatch_egl.c"
++        "${TOD_EPOXY_DIR}/gl_generated_dispatch.c"
++        "${TOD_EPOXY_DIR}/egl_generated_dispatch.c")
++target_include_directories(epoxy PUBLIC "${TOD_EPOXY_DIR}/inc" "libepoxy/include")
++target_include_directories(epoxy PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/epoxy" "libepoxy/src")
++target_compile_options(epoxy PRIVATE "-fPIC" "-fvisibility=hidden" "-w")
++
++set(GLAMOR_SOURCES
++        glamor.c glamor_copy.c glamor_core.c glamor_dash.c glamor_font.c glamor_composite_glyphs.c
++        glamor_image.c glamor_lines.c glamor_segs.c glamor_render.c glamor_gradient.c glamor_prepare.c
++        glamor_program.c glamor_rects.c glamor_spans.c glamor_text.c glamor_transfer.c glamor_transform.c
++        glamor_trapezoid.c glamor_triangles.c glamor_addtraps.c glamor_glyphblt.c glamor_points.c
++        glamor_pixmap.c glamor_largepixmap.c glamor_picture.c glamor_vbo.c glamor_window.c glamor_fbo.c
++        glamor_compositerects.c glamor_utils.c glamor_sync.c)
++list(TRANSFORM GLAMOR_SOURCES PREPEND "xserver/glamor/")
++list(APPEND GLAMOR_SOURCES "lorie/tod-glamor.c")
++add_library(xserver_glamor STATIC ${GLAMOR_SOURCES})
++# epoxy prima di ${inc}: glamor deve vedere epoxy/gl.h, non il GL/gl.h finto fatto per GLX
++target_include_directories(xserver_glamor PRIVATE "${TOD_EPOXY_DIR}/inc" "libepoxy/include" ${inc} "xserver/glamor")
++target_compile_options(xserver_glamor PRIVATE ${c_only_compile_options} ${compile_options} "-DGLAMOR")
++target_link_libraries(xserver_glamor epoxy)
++
++set(TOD_GLAMOR_LIBS xserver_glamor epoxy)

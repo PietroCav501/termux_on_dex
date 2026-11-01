@@ -1,0 +1,69 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# tod-open-host - le app di Debian aprono link e file con le app del desktop.
+#
+# Nel container xdg-open (/usr/local/bin/xdg-open, scritto da cx_install_runner) non apre niente da
+# sé: scrive il link in una FIFO della /tmp condivisa e questo servizio, che gira in Termux, lo apre
+# con l'app predefinita del desktop. Così "Accedi con Google" di un'app apre il browser vero e il
+# ritorno claude://... torna all'app. Uno per sessione (quello di una sessione vecchia si chiude).
+#
+# Accetta solo link (http, https, mailto, claude) e file non eseguibili: niente comandi.
+set -u
+T=${TMPDIR:-/data/data/com.termux/files/usr/tmp}
+F=$T/tod-open.fifo
+PIDF=$T/tod-open-host.pid
+ROOTFS=${TOD_CX_ROOTFS:-}
+# l'xdg-open del desktop, non quello di Termux (che apre le app di Android)
+OPEN=${TOD_OPEN_CMD:-$(dirname "$(readlink -f "$0")")/bin/xdg-open}
+[[ -x $OPEN ]] || OPEN=xdg-open
+
+old=$(cat "$PIDF" 2>/dev/null) || old=""
+if [[ -n $old && $old != "$$" ]] && grep -q tod-open-host "/proc/$old/cmdline" 2>/dev/null; then
+  kill "$old" 2>/dev/null || true
+  # aspetta che sia uscito: chiudendosi toglie la FIFO, e non deve togliere la nostra
+  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$old" 2>/dev/null || break; sleep 0.2; done
+fi
+echo $$ >"$PIDF"
+rm -f "$F"
+mkfifo "$F" 2>/dev/null || true
+chmod 600 "$F" 2>/dev/null || true   # sotto proot chmod di una FIFO può fallire: la cartella è già privata
+[[ -p $F ]] || exit 1
+trap '[[ $(cat "$PIDF" 2>/dev/null) == "$$" ]] && rm -f "$F"; exit 0' INT TERM HUP
+
+host_path() { # percorso visto dal container → percorso in Termux
+  local p=$1
+  case $p in
+    /tmp/*) printf '%s' "$T/${p#/tmp/}" ;;
+    /data/* | /storage/* | /sdcard/*) printf '%s' "$p" ;;
+    /*) printf '%s' "$ROOTFS$p" ;;
+    *) return 1 ;;
+  esac
+}
+
+open_one() {
+  local x=$1 p
+  case $x in
+    http://* | https://* | mailto:* | claude://*) ;;
+    file://*)
+      p=${x#file://}
+      p=$(printf '%b' "${p//%/\\x}")   # %20 → spazio
+      x=$(host_path "$p") || return 0
+      ;;
+    /*) x=$(host_path "$x") || return 0 ;;
+    *) echo "$(date +%T) rifiutato: $x"; return 0 ;;
+  esac
+  if [[ $x == /* ]]; then
+    # solo file normali e non eseguibili: aprire non deve mai voler dire eseguire
+    if [[ ! -e $x || -x $x && ! -d $x || $x == *.desktop ]]; then
+      echo "$(date +%T) rifiutato: $x"
+      return 0
+    fi
+  fi
+  echo "$(date +%T) apro: $x"
+  (setsid "$OPEN" "$x" </dev/null >/dev/null 2>&1 &)
+}
+
+while [[ -p $F ]]; do
+  while IFS= read -r line; do
+    [[ -n $line ]] && open_one "$line"
+  done <"$F"
+done

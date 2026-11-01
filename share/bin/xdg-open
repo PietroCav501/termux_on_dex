@@ -1,0 +1,7 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# xdg-open del desktop (Termux On DeX). In Termux "xdg-open" è termux-open, che apre le app di
+# ANDROID: dal desktop un link finiva in Samsung Internet e i link delle app (claude://...) nell'app di Android.
+# Nella sessione grafica questo viene prima nel PATH e usa le app del desktop (xdg-utils → exo-open).
+P=${PREFIX:-/data/data/com.termux/files/usr}
+if [ -x "$P/bin/xdg-utils-xdg-open" ]; then exec "$P/bin/xdg-utils-xdg-open" "$@"; fi
+exec "$P/bin/termux-open" "$@"

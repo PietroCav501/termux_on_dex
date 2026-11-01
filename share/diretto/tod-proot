@@ -1,0 +1,10 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# tod-proot <programma del container> [argomenti]: da un'app avviata senza proot (tod-diretto.so),
+# i programmi che vogliono essere root (sudo, pkexec, apt, dpkg) ripartono in proot, che ha root finto.
+P=/data/data/com.termux/files/usr
+H=${TOD_DIRETTO_THOME:-/data/data/com.termux/files/home}
+# nel registro di tod: quale app ha chiesto cosa (per capire gli aggiornamenti che "riescono" senza fare niente)
+printf '%s diretto → proot (da %s): %s\n' "$(date '+%F %T')" "$(cat /proc/$PPID/comm 2>/dev/null)" "$*" \
+  >>"$H/.local/state/tod/tod.log" 2>/dev/null
+exec env PATH="$P/bin" PREFIX="$P" HOME="${TOD_DIRETTO_THOME:-/data/data/com.termux/files/home}" \
+  TMPDIR="$P/tmp" LANG="${LANG:-C.UTF-8}" "$P/bin/bash" "$P/bin/tod" cx run --proot -- "$@"

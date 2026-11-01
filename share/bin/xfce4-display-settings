@@ -1,0 +1,6 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# xfce4-display-settings (Termux On DeX): al posto del pannello di XFCE si aprono le Impostazioni, voce schermo.
+# share/bin viene prima nel PATH della sessione (session_xstartup): vale per menu e tasto destro.
+# "--minimal" è il riquadro che compare collegando un altro schermo: qui lo schermo è uno solo
+case " $* " in *" --minimal "* | *" -m "*) exit 0 ;; esac
+exec python3 "$(dirname "$(readlink -f "$0")")/../tod-settings.py" schermo

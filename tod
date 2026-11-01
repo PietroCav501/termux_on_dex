@@ -1,0 +1,116 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# =============================================================================
+#  Termux On DeX 2 — desktop Linux su Android/Samsung DeX, senza root
+#  https://github.com/PietroCav501/termux_on_dex
+# =============================================================================
+set -Eeuo pipefail
+
+TOD_ROOT=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+for _m in core i18n detect pkgs x11 api usb gpu desktop session container diretto apt apps disinstalla games phantom shizuku lingua look files maint menu tui benvenuto installer; do
+  # shellcheck source=/dev/null
+  . "$TOD_ROOT/lib/$_m.sh"
+done
+unset _m
+
+tod_init
+trap 'tod_on_error $? "${BASH_SOURCE[0]##*/}:$LINENO" "$BASH_COMMAND"' ERR
+
+tod_main() {
+  local cmd=${1:-}
+  if (($#)); then shift; fi
+  case $cmd in
+    "")
+      if [[ $(conf_get INSTALLED 0) == 1 ]]; then session_start; else tod_help; fi
+      ;;
+    install | setup) installer_main "$@" ;;
+    start) session_start ;;
+    stop) session_stop ;;
+    spegni | poweroff | shutdown) # dal desktop: staccato, perché chiude anche la sessione che lo lancia
+      # come su un PC: prima si chiudono le app (finestrella share/tod-spegni.py, che poi richiama
+      # "tod spegni --subito"), poi i servizi in ordine (session_stop)
+      # (tod_main ha già tolto "spegni": "--subito" è il primo argomento; con $2 la finestrella
+      # richiamava sé stessa all'infinito)
+      if [[ ${1:-} != --subito && -z ${TOD_SPEGNIMENTO:-} && -n ${DISPLAY:-} && -f $TOD_ROOT/share/tod-spegni.py ]] &&
+        have python3; then
+        log "spegnimento chiesto dal desktop: prima le app"
+        setsid python3 "$TOD_ROOT/share/tod-spegni.py" >/dev/null 2>&1 </dev/null &
+      else
+        log "spegnimento: servizi e desktop"
+        setsid nohup "$PREFIX/bin/tod" stop >/dev/null 2>&1 </dev/null &
+      fi
+      ;;
+    _tune) desktop_install_entries; xfce_first_run; conf_set XFCE_TUNED 2 ;;
+    restart) session_stop; sleep 1; session_start ;;
+    status) session_status ;;
+    menu) menu_main ;;
+    gpu) gpu_cli "$@" ;;
+    display | dpi) display_cli "$@" ;;
+    phantom | fix-phantom) phantom_fix || exit 1 ;;
+    shizuku) shizuku_cli "$@" ;;
+    sviluppo | dev) dev_cli "$@" ;;
+    telefono | phone-apps) android_apps_cli "$@" ;;
+    add) apps_add "$@" ;;
+    apt | apt-get) apt_cli "$@" || exit $? ;;   # un solo apt: prima Termux, poi il container
+    installa | install-deb) deb_gui "$@" ;;   # doppio clic su un .deb nel file manager
+    game | games) games_cli "$@" ;;
+    aspetto | look) look_cli "$@" ;;
+    cartelle | folders) files_cli ;;
+    usb) usb_cli "$@" ;;
+    diretto) diretto_cli "$@" ;;
+    audio) audio_cli "$@" ;;
+    lingua | language) lingua_cli "$@" ;;
+    x11) x11_cli "$@" ;;
+    cx | container) cx_cli "$@" ;;
+    tweak) tod_tweak "$@" ;;
+    prestazioni | performance) LANGUAGE=$TOD_LANG python3 "$TOD_ROOT/share/tod-prestazioni.py" "$@" ;;
+    doctor)
+      if [[ -d $HOME/storage/downloads ]]; then
+        tod_doctor | tee >(sed 's/\x1b\[[0-9;]*m//g' >"$HOME/storage/downloads/tod-doctor.txt")
+        sleep 0.2
+        info "$(t doc_saved)"
+      else
+        tod_doctor
+      fi
+      ;;
+    update) tod_update ;;
+    uninstall) tod_uninstall ;;
+    version | -V | --version) echo "Termux On DeX $TOD_VERSION" ;;
+    help | -h | --help | "?" | aiuto) tod_help ;;
+    _xstartup) session_xstartup ;;
+    _hook) session_hook ;;
+    _preseed) session_preseed_inner ;;
+    _dev_adb) dev_adb_reconnect ;;
+    _deb_check) deb_check "$1" ;;
+    _deb_install) detect_gpu; deb_install "$1" ;;
+    _app_piano) app_piano "$@" ;;
+    _app_rimuovi) app_rimuovi "$@" ;;
+    disinstalla) app_gui "$@" ;;
+    *)
+      err "$(t unknown_cmd "$cmd")"
+      tod_help
+      exit 2
+      ;;
+  esac
+}
+
+tod_tweak() { # opzioni avanzate: tod tweak <chiave> <valore>
+  local k=${1:-} v=${2:-}
+  case $k in
+    vsync) [[ $v =~ ^(on|off|tearfree)$ ]] || die "tod tweak vsync on|off|tearfree"
+      conf_set VSYNC "$v"; gpu_write_env "$(conf_get GPU_PROFILE llvmpipe)" ;;
+    compositor) [[ $v =~ ^(on|off)$ ]] || die "tod tweak compositor on|off"
+      conf_set COMPOSITOR "$v"; conf_set XFCE_TUNED 0 ;;
+    legacy-drawing) [[ $v =~ ^(0|1)$ ]] || die "tod tweak legacy-drawing 0|1"; conf_set X11_LEGACY "$v" ;;
+    force-bgra) [[ $v =~ ^(0|1)$ ]] || die "tod tweak force-bgra 0|1"; conf_set X11_BGRA "$v" ;;
+    extra-keys) [[ $v =~ ^(true|false)$ ]] || die "tod tweak extra-keys true|false"
+      conf_set X11_EXTRA_KEYS "$v"; conf_set X11_PREFS_APPLIED 0 ;;
+    keep-audio) [[ $v =~ ^(0|1)$ ]] || die "tod tweak keep-audio 0|1"; conf_set AUDIO_KEEP "$v" ;;
+    lang) [[ $v =~ ^(it|en)$ ]] || die "tod tweak lang it|en"; conf_set UI_LANG "$v" ;;
+    tema | theme) [[ $v =~ ^(classico|scuro)$ ]] || die "tod tweak tema classico|scuro"; conf_set UI_THEME "$v" ;;
+    "") printf '%s\n' "vsync compositor legacy-drawing force-bgra extra-keys keep-audio lang tema"; return 0 ;;
+    *) die "$(t unknown_cmd "tweak $k")" ;;
+  esac
+  ok "$k = $v · $(t m_restart_needed)"
+}
+
+tod_main "$@"
