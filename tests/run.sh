@@ -3088,7 +3088,8 @@ PYEOF
 }
 
 test_app_cambiate_una_volta() { # 230 app del telefono tolte insieme (S20+): Start e barra rifanno l'elenco una volta
-  has "Start: attesa prima di ricostruire" "_ricarica_dopo())" "$(cat "$ROOT/share/tod-start.py")"
+  has "Start: i cambi passano dall'attesa" 'connect("changed", lambda *a: self._app_cambiate())' "$(cat "$ROOT/share/tod-start.py")"
+  has "Start: attesa prima di ricostruire" "self._ricarica_dopo()" "$(sed -n '/def _app_cambiate/,/^$/p' "$ROOT/share/tod-start.py")"
   hasnt "Start: mai a ogni cambio" 'connect("changed", lambda *a: self.reload())' "$(cat "$ROOT/share/tod-start.py")"
   has "barra: attesa anche lei" "_ricarica_dopo())" "$(cat "$ROOT/share/tod-barra.py")"
   # sessione: barra, Start e pannelli prima di aspetto e cartelle
@@ -3664,6 +3665,20 @@ test_tod_gettext_compila_su_termux_nuovo() { # 1° novembre: spawn.h (solo con l
     [[ $ok == *" $h "* ]] || fuori+="$h "
   done
   eq "intestazioni di un Termux nuovo (verificare con dpkg -S che vengano da ndk-sysroot)" "" "$fuori"
+}
+
+test_start_menu_e_icone_app_nuove() { # 1° novembre (S20+): app appena installata senza icona, Start bloccato
+  local f="$ROOT/share/tod-start.py"
+  # il menu del tasto destro sulla finestra, non sulla tessera che una ricostruzione distrugge
+  has "menu agganciato alla finestra" "menu.attach_to_widget(self, None)" "$(sed -n '/def on_app_button/,/return True/p' "$f")"
+  hasnt "mai alla tessera" "attach_to_widget(widget" "$(cat "$f")"
+  has "niente ricostruzione sotto un menu aperto" "self._ricarica_rimandata = True" "$(sed -n '/def _ricarica_ora/,/return False/p' "$f")"
+  has "si rifà alla chiusura del menu" "_ricarica_dopo(300)" "$(sed -n '/def _menu_chiuso/,/^$/p' "$f")"
+  # icone arrivate dopo la voce: si ricercano, e intanto quella generica
+  has "icone ricercate a ogni ricostruzione" "rescan_if_needed()" "$(sed -n '/def reload/,/seen = set/p' "$f")"
+  has "e a ogni apertura" "rescan_if_needed()" "$(sed -n '/def show_menu/,/home_apps_check/p' "$f")"
+  has "senza icona: quella generica" '"application-x-executable"' "$(sed -n '/^def app_icon/,/return img/p' "$f")"
+  has "e si riprova per un po'" "self._giri_icone < 6" "$(cat "$f")"
 }
 
 test_lingua_ripara() { # la traduzione mancante si installa da sola all'avvio del desktop, una volta al giorno

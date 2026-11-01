@@ -238,12 +238,29 @@ def kind_label(info):
     return T("phone_app") if is_phone_app(info) else T("pc_app")
 
 
+ICONE_MANCANTI = set()   # app la cui icona non c'era ancora (la si cerca di nuovo poco dopo)
+
+
+def icona_presente(gi_icon):
+    if isinstance(gi_icon, Gio.ThemedIcon):
+        tema = Gtk.IconTheme.get_default()
+        return any(tema.has_icon(n) for n in gi_icon.get_names())
+    if isinstance(gi_icon, Gio.FileIcon):
+        f = gi_icon.get_file()
+        return f is not None and f.query_exists(None)
+    return True
+
+
 def app_icon(info, size):
+    # un'app appena installata (ArtCraft dal suo launcher, S20+ 1° novembre): la sua voce compare un attimo prima
+    # che lo Start veda le sue icone. Senza icona vera: quella generica (non il vuoto), e si riprova poco dopo
     img = Gtk.Image()
     gi_icon = info.get_icon()
-    if gi_icon is not None:
+    if gi_icon is not None and icona_presente(gi_icon):
         img.set_from_gicon(gi_icon, Gtk.IconSize.DIALOG)
     else:
+        if gi_icon is not None:
+            ICONE_MANCANTI.add(info.get_id())
         img.set_from_icon_name("application-x-executable", Gtk.IconSize.DIALOG)
     img.set_pixel_size(size)
     return img
@@ -334,7 +351,10 @@ class Start(Gtk.Window):
         # una raffica di cambi (230 app del telefono tolte, un .deb che scrive le sue voci): si ricostruisce
         # una volta sola, quando si fermano; prima ogni cambio rifaceva tutto e lo Start restava bloccato
         self._ricarica = 0
-        self.monitor.connect("changed", lambda *a: self._ricarica_dopo())
+        self._ricarica_rimandata = False
+        self._giri_icone = 0
+        self.menu_aperto = None
+        self.monitor.connect("changed", lambda *a: self._app_cambiate())
         self.recent = Gtk.RecentManager.get_default()
         self.recent.connect("changed", lambda *a: self.fill_recent())
         self.reload()
@@ -445,12 +465,21 @@ class Start(Gtk.Window):
             GLib.source_remove(self._ricarica)
         self._ricarica = GLib.timeout_add(ms, self._ricarica_ora)
 
+    def _app_cambiate(self):
+        self._giri_icone = 0   # app nuove: altri tentativi per le loro icone
+        self._ricarica_dopo()
+
     def _ricarica_ora(self):
         self._ricarica = 0
+        if self.menu_aperto is not None:   # mai sotto un menu del tasto destro: si rifà quando si chiude
+            self._ricarica_rimandata = True
+            return False
         self.reload()
         return False
 
     def reload(self):
+        Gtk.IconTheme.get_default().rescan_if_needed()   # icone arrivate da poco (app appena installate)
+        ICONE_MANCANTI.clear()
         seen = set()
         apps = []
         for a in Gio.AppInfo.get_all():
@@ -469,6 +498,11 @@ class Start(Gtk.Window):
         self.fill_pinned()
         self.fill_all()
         self.fill_recent()
+        if ICONE_MANCANTI and self._giri_icone < 6:   # icone in arrivo: si ricontrolla ogni 5 s, per 30 s al massimo
+            self._giri_icone += 1
+            self._ricarica_dopo(5000)
+        elif not ICONE_MANCANTI:
+            self._giri_icone = 0
 
     def tile(self, info):
         b = Gtk.Button()
@@ -657,9 +691,19 @@ class Start(Gtk.Window):
             item.connect("activate", lambda *a: self.set_on_desktop(info, not on_desk))
             menu.append(item)
         menu.show_all()
-        menu.attach_to_widget(widget, None)
+        # agganciato alla finestra, non alla tessera: una ricostruzione dello Start (app installata in quel
+        # momento) distruggeva la tessera sotto il menu aperto e lo Start restava bloccato (S20+, 1° novembre)
+        menu.attach_to_widget(self, None)
+        self.menu_aperto = menu
+        menu.connect("deactivate", self._menu_chiuso)
         menu.popup_at_pointer(event)
         return True
+
+    def _menu_chiuso(self, menu):
+        self.menu_aperto = None
+        if self._ricarica_rimandata:
+            self._ricarica_rimandata = False
+            self._ricarica_dopo(300)
 
     @staticmethod
     def desktop_path(info):
@@ -770,6 +814,8 @@ class Start(Gtk.Window):
             return
 
     def show_menu(self):
+        if Gtk.IconTheme.get_default().rescan_if_needed():   # icone nuove da quando si è aperto l'ultima volta
+            self.reload()
         self.home_apps_check()
         self.search.set_text("")
         self.show_page("home")
