@@ -1,5 +1,7 @@
 # Termux On DeX 2
 
+**Italiano** · [English](README.en.md)
+
 Un desktop Linux per telefoni Android, fatto per usare il telefono con Samsung DeX
 collegato a un monitor. Non serve il root.
 
