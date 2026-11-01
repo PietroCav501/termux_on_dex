@@ -21,6 +21,7 @@ tod_doctor() { # report da allegare alle issue
   printf '  %-12s %s\n' "$(t lbl_container)" "$cx"
   printf '  %-12s %s\n' "Phantom" "$(phantom_status)"
   printf '  %-12s %s\n' "Shizuku" "$(shizuku_status)"
+  printf '  %-12s %s\n' "$(t lbl_lingua)" "$(lingua_doctor)"
   printf '  %-12s %s\n' "Config" "DE=$(conf_get DE xfce) DPI=$(conf_get DPI auto) VSYNC=$(conf_get VSYNC on) X11_LEGACY=$(conf_get X11_LEGACY 0)"
   gpu_show
   if [[ -f $TOD_STATE_DIR/cx-gpu-probe.txt ]]; then

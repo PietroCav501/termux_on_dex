@@ -338,6 +338,7 @@ session_hook() { # autostart dentro il desktop: DPI per lo schermo attuale, env 
   files_session || true
   files_trust_launchers || true
   files_rename_css || true
+  lingua_ripara || true   # lingua scelta ma traduzione mancante: si installa da sola, in sottofondo
   log "sessione: aspetto e cartelle pronti dopo $((SECONDS - t0)) s"
   # bordi invisibili per ridimensionare: la cornice disegnata è una riga (share/tod-edges.py)
   if [[ $(conf_get BORDI_INVISIBILI 1) == 1 ]] && have python3; then

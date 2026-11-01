@@ -46,10 +46,14 @@ lingua_active() { # traduzione del desktop pronta per la lingua scelta?
 lingua_env() { # esporta l'ambiente di traduzione (solo per la sessione grafica)
   # tod-gettext.c cambiato (es. la rinomina in linea): si ricompila prima di avviare il desktop
   if [[ -f $LINGUA_SO && $TOD_ROOT/share/tod-gettext.c -nt $LINGUA_SO ]] && have clang; then lingua_build || true; fi
-  if ! lingua_active; then return 0; fi
   local l
   l=$(lingua_code)
-  export TOD_GETTEXT_LANG=$l TOD_GETTEXT_DIR=$LINGUA_DIR LANGUAGE=$l
+  if [[ $l == en ]]; then return 0; fi
+  # le nostre finestre (Start, barra, Impostazioni...) seguono LANGUAGE: sempre la lingua scelta, anche quando la
+  # traduzione di XFCE manca (1° novembre, S20+: passo di traduzione fallito → tutto il desktop in inglese)
+  export LANGUAGE=$l
+  if ! lingua_active; then return 0; fi
+  export TOD_GETTEXT_LANG=$l TOD_GETTEXT_DIR=$LINGUA_DIR
   case ":${LD_PRELOAD:-}:" in
     *":$LINGUA_SO:"*) ;;
     *) export LD_PRELOAD="$LINGUA_SO${LD_PRELOAD:+:$LD_PRELOAD}" ;;
@@ -166,6 +170,33 @@ lingua_setup() { # passo dell'installer e "tod lingua": non blocca mai l'install
   lingua_firefox "$l" || true
   lingua_container "$l" || true
   return 0
+}
+
+lingua_ripara() { # nel desktop: lingua scelta ma traduzione di XFCE mancante (passo fallito) → in sottofondo
+  local l prova="$TOD_STATE_DIR/lingua-tentativo" oggi
+  l=$(lingua_code)
+  if [[ $l == en ]] || lingua_active; then return 0; fi
+  oggi=$(date +%F)
+  if [[ $(cat "$prova" 2>/dev/null) == "$oggi" ]]; then return 0; fi   # al massimo un tentativo al giorno
+  echo "$oggi" >"$prova"
+  log "lingua: traduzione '$l' mancante, la installo in sottofondo"
+  (
+    exec </dev/null >>"$TOD_LOG" 2>&1
+    if have renice; then renice -n 10 -p "$BASHPID" >/dev/null 2>&1 || true; fi   # mai a scapito del desktop
+    if lingua_setup && lingua_active; then
+      log "lingua: traduzione '$l' pronta"
+      if have notify-send; then notify-send -i preferences-desktop-locale "$(t lg_ready_title)" "$(t lg_ready_text)" || true; fi
+    else
+      log "lingua: traduzione '$l' ancora mancante, riprovo domani"
+    fi
+  ) &
+  return 0
+}
+
+lingua_doctor() { # una riga per tod doctor
+  local l
+  l=$(lingua_code)
+  if [[ $l == en ]]; then printf 'en'; elif lingua_active; then t lg_doc_ok "$l"; else t lg_doc_missing "$l" "$l"; fi
 }
 
 lingua_cli() { # tod lingua [it|en|...]

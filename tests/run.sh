@@ -3598,6 +3598,11 @@ test_lingua_code_and_env() {
   eq "scelta dell'utente" en "$(lingua_code)"
   conf_set LINGUA it
   fails lingua_active
+  # 1° novembre (S20+): passo di traduzione fallito → anche Start, barra e Impostazioni in inglese
+  eq "senza traduzione di XFCE: la lingua per le nostre finestre, niente modulo" "it||" \
+    "$(unset LANGUAGE TOD_GETTEXT_LANG LD_PRELOAD; lingua_env; echo "${LANGUAGE:-}|${TOD_GETTEXT_LANG:-}|${LD_PRELOAD:-}")"
+  eq "in inglese: niente" "|" "$(unset LANGUAGE TOD_GETTEXT_LANG; LINGUA=x; conf_set LINGUA en; lingua_env; echo "${LANGUAGE:-}|${TOD_GETTEXT_LANG:-}"; conf_set LINGUA it)"
+  conf_set LINGUA it
   touch "$LINGUA_SO"
   mkdir -p "$LINGUA_DIR/it/LC_MESSAGES"
   fails lingua_active
@@ -3617,6 +3622,35 @@ test_lingua_code_and_env() {
   have() { [[ $1 == gimp ]]; }
   eq "solo GIMP installato" "gimp-data libgimp-3.0-0" "$(lingua_app_pkgs | tr '\n' ' ' | sed 's/ $//')"
   have() { command -v "$1" >/dev/null 2>&1; }
+}
+
+test_lingua_ripara() { # la traduzione mancante si installa da sola all'avvio del desktop, una volta al giorno
+  conf_set LINGUA it
+  lingua_setup() { echo chiamata >>"$HOME/ripara"; touch "$LINGUA_SO"; mkdir -p "$LINGUA_DIR/it/LC_MESSAGES"
+    touch "$LINGUA_DIR/it/LC_MESSAGES/thunar.mo"; }
+  printf '#!/bin/sh\necho "$@" >>"$HOME/notifiche"\n' >"$PREFIX/bin/notify-send"
+  chmod +x "$PREFIX/bin/notify-send"
+  PATH="$PREFIX/bin:$PATH"
+  has "tod doctor: mancante, e cosa succederà" "traduzione di XFCE mancante" "$(lingua_doctor)"
+  lingua_ripara
+  wait
+  eq "installata in sottofondo" chiamata "$(cat "$HOME/ripara")"
+  has "avviso quando è pronta" "Traduzione pronta" "$(cat "$HOME/notifiche")"
+  eq "tod doctor: pronta" "it, desktop tradotto" "$(lingua_doctor)"
+  rm -f "$LINGUA_SO" "$HOME/ripara"
+  lingua_ripara
+  wait
+  eq "fallita oggi: si riprova domani, non a ogni avvio" "" "$(cat "$HOME/ripara" 2>/dev/null)"
+  echo 2000-01-01 >"$TOD_STATE_DIR/lingua-tentativo"
+  lingua_ripara
+  wait
+  eq "un altro giorno: si riprova" chiamata "$(cat "$HOME/ripara")"
+  conf_set LINGUA en
+  rm -f "$HOME/ripara" "$TOD_STATE_DIR/lingua-tentativo"
+  lingua_ripara
+  wait
+  eq "in inglese: niente da installare" "" "$(cat "$HOME/ripara" 2>/dev/null)"
+  has "chiamata dall'hook della sessione" "lingua_ripara" "$(sed -n '/^session_hook() {/,/^}/p' "$ROOT/lib/session.sh")"
 }
 
 test_logout_stops_everything() {
