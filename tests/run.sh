@@ -1913,6 +1913,28 @@ test_session_log_cap() { # session.log con un tetto, anche mentre un programma c
   if ((n > 100000)); then echo "  ✘ start.log ancora di $n byte"; return 1; fi
 }
 
+test_barra_icona_finestra() { # 1° novembre (S20+): app senza voce di menu con l'icona enorme nella barra
+  has "ripiego: l'icona della finestra alla misura della barra" "get_icon(px(self.dim()[1]))" \
+    "$(sed -n '/def aggiorna_pulsante/,/ev.img.set_pixel_size/p' "$ROOT/share/tod-barra.py")"
+  python3 -c "import gi; gi.require_version('GdkPixbuf', '2.0')" 2>/dev/null || return 0
+  local out
+  out=$(python3 - "$ROOT/share/tod-barra.py" <<'PYEOF'
+import re, sys
+import gi
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GdkPixbuf, GLib
+src = open(sys.argv[1]).read()
+exec(re.search(r"^    def get_icon\(.*?(?=^    def )", src, re.S | re.M).group(0).replace("\n    ", "\n")[4:])
+class P:   # _NET_WM_ICON finto: un'icona da 48x48, come quella che PhotoCraft mette sulla finestra
+    def interi(self, xid, nome): return [48, 48] + [0xff3366cc] * (48 * 48)
+class F: p, xid = P(), 1
+pb = get_icon(F(), 26)
+print(pb.get_width(), pb.get_height())
+PYEOF
+)
+  eq "l'icona esce alla misura chiesta" "26 26" "$out"
+}
+
 test_pannelli() { # pannelli della barra: il modulo si carica, le icone della barra aprono il pannello giusto
   command -v python3 >/dev/null || return 0
   python3 -m py_compile "$ROOT/share/tod-pannelli.py" || { echo "tod-pannelli.py non compila"; return 1; }

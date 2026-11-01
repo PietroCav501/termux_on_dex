@@ -1168,7 +1168,9 @@ class Barra(Gtk.Window):
         if v.info is not None and v.info.get_icon() is not None:
             ev.img.set_from_gicon(v.info.get_icon(), Gtk.IconSize.DND)
         elif v.finestre and v.finestre[0].get_icon() is not None:
-            ev.img.set_from_pixbuf(v.finestre[0].get_icon())
+            # l'icona della finestra già alla misura giusta: set_pixel_size vale solo per le icone del tema, e a
+            # 48 px fissi le app senza voce di menu avevano l'icona enorme (1° novembre, visto sul S20+)
+            ev.img.set_from_pixbuf(v.finestre[0].get_icon(px(self.dim()[1])))
         else:
             ev.img.set_from_icon_name("application-x-executable", Gtk.IconSize.DND)
         ev.img.set_pixel_size(px(self.dim()[1]))
