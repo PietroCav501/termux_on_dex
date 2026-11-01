@@ -2539,11 +2539,41 @@ test_install_sh_full_upgrade_first() { # 31 ottobre: "CANNOT LINK EXECUTABLE" su
   printf '#!/bin/sh\nexit 0\n' >"$b/dpkg"
   printf '#!/bin/sh\necho "tod $*" >>%s/log\n' "$d" >"$d/tod-finto"
   printf '#!/bin/sh\nfor a; do dest=$a; done\nmkdir -p "$dest" && cp %s/tod-finto "$dest/tod"\n' "$d" >"$b/git"
+  printf '#!/bin/sh\necho "pkg $*" >>%s/log\n' "$d" >"$b/pkg"
+  printf '#!/bin/sh\nexit 0\n' >"$b/apt-cache"   # gli elenchi dei pacchetti ci sono
   chmod +x "$b"/* "$d/tod-finto"
   PATH="$b:$PATH" PREFIX="$d/com.termux/files/usr" TOD_HOME="$d/tod" bash "$d/script/install.sh" --yes </dev/null >/dev/null 2>&1
-  eq "prima l'aggiornamento completo, poi i pacchetti e tod" \
-    "$(printf '%s\n' update full-upgrade 'install git dialog jq curl ca-certificates' 'tod install --yes')" \
+  eq "elenchi da pkg (sceglie il mirror), aggiornamento completo, poi i pacchetti e tod" \
+    "$(printf '%s\n' 'pkg update' full-upgrade 'install git dialog jq curl ca-certificates' 'tod install --yes')" \
     "$(sed -e 's/^apt-get -y -q -o [^ ]* -o [^ ]* //' "$d/log")"
+  # 1° novembre (S20+): nessun server raggiungibile, il DNS del telefono li manda a 127.0.0.1
+  : >"$d/log"
+  printf '#!/bin/sh\nexit 100\n' >"$b/apt-cache"
+  printf '#!/bin/sh\nprintf 127.0.0.1\n' >"$b/curl"
+  chmod +x "$b"/*
+  local out rc=0
+  out=$(PATH="$b:$PATH" PREFIX="$d/com.termux/files/usr" TOD_HOME="$d/tod" bash "$d/script/install.sh" --yes </dev/null 2>&1) || rc=$?
+  eq "senza elenchi si ferma" 1 "$rc"
+  hasnt "senza elenchi: niente install alla cieca" "install git" "$(cat "$d/log")"
+  has "il perché: il DNS del telefono" "DNS privato" "$out"
+  printf '#!/bin/sh\nprintf 104.16.1.1\n' >"$b/curl"
+  out=$(PATH="$b:$PATH" PREFIX="$d/com.termux/files/usr" TOD_HOME="$d/tod" bash "$d/script/install.sh" --yes </dev/null 2>&1) || true
+  has "rete giù: controllare la connessione" "Controlla la connessione" "$out"
+}
+
+test_pkg_refresh_altro_mirror() { # un server dei pacchetti irraggiungibile: pkg di Termux sceglie un altro mirror
+  apt_run() { echo "apt $*" >>"$HOME/apt"; [[ $* != *--error-on=any* ]]; }
+  printf '#!/bin/sh\necho "pkg $*" >>"$HOME/pkg"\n' >"$PREFIX/bin/pkg"
+  chmod +x "$PREFIX/bin/pkg"
+  PATH="$PREFIX/bin:$PATH"
+  pkg_refresh
+  eq "server giù: pkg update" "pkg update" "$(cat "$HOME/pkg")"
+  eq "poi gli elenchi dal mirror nuovo" 2 "$(grep -c update "$HOME/apt")"
+  rm -f "$HOME/pkg" "$HOME/apt"
+  apt_run() { echo "apt $*" >>"$HOME/apt"; }
+  pkg_refresh
+  eq "tutto a posto: niente pkg" "" "$(cat "$HOME/pkg" 2>/dev/null)"
+  eq "una volta sola" 1 "$(grep -c update "$HOME/apt")"
 }
 
 test_games_bridge() {

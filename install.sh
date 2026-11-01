@@ -9,6 +9,21 @@
 # =============================================================================
 set -Eeuo pipefail
 
+repo_errore() { # nessun server dei pacchetti di Termux raggiungibile: perché, e cosa fare
+  local ip=""
+  ip=$(curl -s -o /dev/null -w '%{remote_ip}' --connect-timeout 8 https://packages-cf.termux.dev/ 2>/dev/null) || ip=""
+  echo "✘ I server dei pacchetti di Termux non rispondono, neanche gli altri mirror." >&2
+  echo "  Termux package servers are unreachable, other mirrors included." >&2
+  if [[ $ip == 127.* || $ip == 0.0.0.0 || $ip == ::1 ]]; then
+    echo "  Il telefono li manda a $ip: li blocca il DNS privato (Impostazioni → Connessioni → Altre impostazioni" >&2
+    echo "  di connessione → DNS privato: Automatico) o un'app che blocca pubblicità o fa da VPN. Sbloccali e rilancia." >&2
+    echo "  The phone sends them to $ip: Private DNS or an ad-blocking/VPN app is blocking them. Unblock and rerun." >&2
+  else
+    echo "  Controlla la connessione e rilancia il comando (oppure scegli un mirror con termux-change-repo)." >&2
+    echo "  Check the connection and run the command again (or pick a mirror with termux-change-repo)." >&2
+  fi
+}
+
 main() {
   local repo=${TOD_REPO_URL:-https://github.com/PietroCav501/termux_on_dex}
   local branch=${TOD_BRANCH:-v2}   # la v2 sta nel ramo v2 (main è ancora la v1)
@@ -36,8 +51,12 @@ main() {
   # un'installazione interrotta (Termux chiuso o andato in crash a metà di apt) lascia dpkg a metà:
   # senza questo ogni apt-get dopo si ferma con "dpkg was interrupted"
   dpkg --configure -a --force-confdef --force-confold >/dev/null 2>&1 || true
-  if ! apt-get "${apt_flags[@]}" update; then
-    echo "✘ Repository non raggiungibili. Prova: termux-change-repo  (poi rilancia l'installer)" >&2
+  # Gli elenchi dei pacchetti con pkg di Termux: prova i mirror e ne sceglie uno che risponde. apt-get update
+  # restava sul server predefinito anche irraggiungibile, finiva "senza errori" e poi "Unable to locate package
+  # git" (1° novembre, S20+: packages-cf.termux.dev mandato a 127.0.0.1 dal DNS del telefono)
+  if command -v pkg >/dev/null 2>&1; then pkg update || true; else apt-get "${apt_flags[@]}" update || true; fi
+  if ! apt-cache show git >/dev/null 2>&1; then
+    repo_errore
     exit 1
   fi
   # Termux regge solo aggiornamenti completi: su un Termux appena installato "install git" porta

@@ -19,7 +19,16 @@ pkg_installed() { [[ $(dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null) 
 pkg_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null || true; }
 pkg_repo_version() { apt-cache madison "$1" 2>/dev/null | awk 'NR==1{print $3}'; }
 
-pkg_refresh() { retry 3 5 apt_run "${APT_FLAGS[@]}" update; }
+pkg_refresh() { # elenchi dei pacchetti; se un server non risponde, pkg di Termux sceglie un mirror che risponde
+  # (e riscrive anche x11.list e root.list): apt-get update resta sul server di prima anche se è irraggiungibile
+  if apt_run "${APT_FLAGS[@]}" --error-on=any update; then return 0; fi
+  if have pkg; then
+    log "pacchetti: un server non risponde, pkg update sceglie un altro mirror"
+    pkg update >>"$TOD_LOG" 2>&1 || true
+  fi
+  # alla fine come prima: un repository di terzi giù (tur) non deve fermare tutto
+  retry 3 5 apt_run "${APT_FLAGS[@]}" update
+}
 
 pkg_upgrade() {
   pkg_refresh || return 1
