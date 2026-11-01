@@ -5,9 +5,10 @@
 A Linux desktop for Android phones, made for using the phone with Samsung DeX on an
 external monitor. No root needed.
 
-It's built on Termux with Termux:X11 and XFCE. Apps that Termux doesn't have come from a
-Debian container, and graphics run on the phone's GPU. The name comes from Samsung's old
-*Linux on DeX*, which no longer exists.
+It's built on Termux with Termux:X11 and XFCE, and almost everything runs directly on
+Android, without proot. Apps that Termux doesn't have come from a Debian container, and they
+start without proot too. The name comes from Samsung's old *Linux on DeX*, which no longer
+exists.
 
 It's still an alpha. I've tested it on a Galaxy S26 Ultra (Snapdragon, Adreno GPU) and a
 Galaxy S20+ (Exynos, Mali GPU); it should work on any 64-bit Android 8 or later. If
@@ -17,6 +18,36 @@ something doesn't work, open an issue and attach the file that `tod doctor` crea
 
 The installer and the project's own windows are in English, or in Italian on a phone set
 to Italian. XFCE and the apps follow the phone's language.
+
+## What makes it different
+
+Many Termux scripts put the desktop inside proot, which stops the program on every system
+call. Here proot is used for little more than installing packages.
+
+- XFCE, the taskbar, the Start menu and the Termux apps are real Android programs, built
+  for Termux.
+- Debian apps start without proot too: Debian's loader, patched for Android, and
+  [fakechroot](https://github.com/dex4er/fakechroot) show the app the container's files
+  without stopping it. Measured on a Galaxy S26 Ultra: 200,000 file lookups in 0.13 seconds
+  instead of 10; glxgears from about 310 to about 650 frames per second; an Electron app
+  opens in 1.1 seconds instead of 2.6 and uses 36% less CPU and 20% less memory. The few
+  apps that don't start this way fall back to proot by themselves.
+- USB sticks, drives and SD cards without root. Android doesn't give USB drives to apps:
+  here they're read by the real Linux kernel, built as a library
+  ([LKL](https://github.com/lkl/linux)) and running inside Termux. ext4, exFAT, FAT and NTFS,
+  read and write; apps see them as normal folders in `/media/usb`.
+- Termux:X11 compositing windows on the GPU (glamor), where the official build does it on
+  the CPU. The changes are in `x11/`, the APK and sources in the releases. It's installed
+  automatically with Termux from GitHub.
+- One `apt` for Termux and Debian: `sudo apt install gimp` takes the Termux package if
+  there is one, otherwise the Debian one, and each app is installed only once.
+- The phone inside the desktop: Android apps in the Start menu with their icons, and the
+  phone's battery, network and notifications in the taskbar.
+- The installer picks the GPU driver by actually testing it on the phone.
+
+![PhotoCraft and CADCraft, Debian apps, running without proot](docs/screenshots/craft-apps.jpg)
+
+![An ext4 USB stick and an NTFS drive in the file manager and in Disks](docs/screenshots/usb-drives.jpg)
 
 ## Installation
 
@@ -36,6 +67,11 @@ Add `--yes` at the end to skip the questions and use the default choices.
 It takes 30-40 minutes and about 8 GB of free space. If the installation stops, run the
 same command again: it picks up from the step where it stopped.
 
+After the first steps in Termux the installation continues full screen: you pick the
+language, your name, the look and the apps while everything installs in the background.
+
+![The installer: language, appearance, apps and progress](docs/screenshots/installer.jpg)
+
 At the start you're asked to connect the phone's wireless ADB to itself. This stops Android
 from closing the desktop ("Process completed (signal 9)") and lets the installer set up
 Termux:X11 and Termux:API on its own. Wireless debugging only works while the phone is
@@ -51,29 +87,17 @@ process restrictions" in Developer options.
   calendar, battery, memory and network.
 - Settings and package updates in their own windows.
 - A file manager with the phone's folders: Documents, Downloads, Pictures, Music, Videos.
-- USB sticks, drives and SD cards, read and write (ext4, exFAT, FAT, NTFS), with eject and
-  a tool to format them. No root: the drives are read by the Linux kernel built as a
-  library ([LKL](https://github.com/lkl/linux)). `lsblk`, `fdisk` and `mkfs` work from the
-  terminal too.
-- One `apt`: `sudo apt install gimp` takes the Termux package if there is one, otherwise
-  the Debian one, and the app shows up in the Start menu only once.
-- The phone's Android apps in the Start menu, opening in a DeX window.
-- Phone battery, network and notifications in the taskbar (with Termux:API).
+- USB sticks and cards in the file manager with eject, a tool to format them, and `lsblk`,
+  `fdisk` and `mkfs` in the terminal.
+- Double-click a `.deb` file to install it, like a `.pkg` on a Mac: the installer works out
+  whether it goes to Termux or Debian.
+- Android apps open in a DeX window; the phone's battery, network and notifications need
+  Termux:API, which the installer sets up.
 - Firefox and LibreOffice.
 
 ![File manager with the phone's folders, and Settings](docs/screenshots/files-settings.jpg)
 
-![GIMP and Chromium on the desktop](docs/screenshots/apps.jpg)
-
-XFCE runs directly in Termux. Debian apps start without proot when they can: Debian's
-loader, patched for Android, together with [fakechroot](https://github.com/dex4er/fakechroot)
-is enough to show the app the container's files, and graphics run about twice as fast.
-Apps that don't start this way fall back to proot by themselves; `tod diretto off` turns
-this mode off.
-
-With Termux from GitHub, the installer sets up a modified Termux:X11 that composites
-windows on the GPU (glamor). The changes and the scripts to rebuild it are in `x11/`; the
-APK and the full sources are in the releases.
+![The .deb package installer](docs/screenshots/deb-installer.jpg)
 
 ## Known limits
 
