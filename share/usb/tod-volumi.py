@@ -22,6 +22,17 @@ PERCORSO = "/org/gtk/Private/RemoteVolumeMonitor"
 RUN = os.path.join(os.environ.get("TMPDIR", "/tmp"), "tod-usb")
 ELENCO = os.path.join(RUN, "volumi")
 TOD_USB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tod-usb")
+# il registro dei dischi di tod-usb: D-Bus avvia il monitor con l'uscita in /dev/null
+REGISTRO = os.path.join(os.environ.get("TOD_TERMUX_HOME") or os.path.expanduser("~"), ".local/state/tod/usb.log")
+CONTROLLO_S = 5   # ogni quanto si rilegge l'elenco anche senza avvisi di inotify
+
+
+def registro(testo):
+    try:
+        with open(REGISTRO, "a") as f:
+            f.write(f"{GLib.DateTime.new_now_local().format('%F %T')} volumi: {testo}\n")
+    except OSError:
+        pass
 
 DRIVE = "(ssssbbbbbbbbuasa{ss}sa{sv})"
 VOLUME = "(ssssssbbssa{ss}sa{sv})"
@@ -124,29 +135,40 @@ def mount_struct(v):   # sempre montati, in /media/usb/<nome>
 class Monitor:
     def __init__(self, conn):
         self.conn = conn
+        # prima la sorveglianza, poi la lettura: un elenco scritto in mezzo (disco già collegato
+        # all'avvio del desktop, 3 novembre) andava perso fino al cambiamento successivo
+        self.osserva = Gio.File.new_for_path(RUN).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+        self.osserva.connect("changed", self.cambiato)
         self.dischi, self.volumi = leggi()
         node = Gio.DBusNodeInfo.new_for_xml(XML)
         conn.register_object(PERCORSO, node.interfaces[0], self.chiamata, None, None)
-        self.osserva = Gio.File.new_for_path(RUN).monitor_directory(Gio.FileMonitorFlags.NONE, None)
-        self.osserva.connect("changed", self.cambiato)
+        GLib.timeout_add_seconds(CONTROLLO_S, self.controllo)
+        registro(f"monitor avviato, {len(self.volumi)} volumi: {', '.join(v['nome'] for v in self.volumi) or '-'}")
 
     def segnale(self, nome, tipo, valore):
         self.conn.emit_signal(None, PERCORSO, "org.gtk.Private.RemoteVolumeMonitor", nome,
                               GLib.Variant(f"(ss{tipo})", (NOME_DBUS, valore[0], valore)))
 
     def cambiato(self, _mon, f, _altro, _evento):
-        n = f.get_basename() or ""
-        if n != "volumi":
-            return
+        if (f.get_basename() or "") == "volumi":
+            self.aggiorna("avviso")
+
+    def controllo(self):   # anche un avviso di inotify perso si recupera entro CONTROLLO_S secondi
+        self.aggiorna("controllo")
+        return True
+
+    def aggiorna(self, perche):
+        """Rilegge l'elenco e annuncia a GIO le differenze; True se ce n'erano."""
         prima_d, prima_v = self.dischi, {v["id"]: v for v in self.volumi}
         self.dischi, self.volumi = leggi()
         dopo_v = {v["id"]: v for v in self.volumi}
         prima_ids = {d["id"]: d for d in prima_d.values()}
         dopo_ids = {d["id"]: d for d in self.dischi.values()}
-        for vid, v in prima_v.items():
-            if vid not in dopo_v or dopo_v[vid] != v:
-                self.segnale("MountRemoved", MOUNT, mount_struct(v))
-                self.segnale("VolumeRemoved", VOLUME, volume_struct(v))
+        tolti = [v for vid, v in prima_v.items() if vid not in dopo_v or dopo_v[vid] != v]
+        nuovi = [v for vid, v in dopo_v.items() if vid not in prima_v or prima_v[vid] != v]
+        for v in tolti:
+            self.segnale("MountRemoved", MOUNT, mount_struct(v))
+            self.segnale("VolumeRemoved", VOLUME, volume_struct(v))
         for did, d in prima_ids.items():
             if did not in dopo_ids:
                 self.segnale("DriveDisconnected", DRIVE, drive_struct(d))
@@ -155,15 +177,19 @@ class Monitor:
                 self.segnale("DriveConnected", DRIVE, drive_struct(d))
             elif prima_ids[did] != d:
                 self.segnale("DriveChanged", DRIVE, drive_struct(d))
-        for vid, v in dopo_v.items():
-            if vid not in prima_v or prima_v[vid] != v:
-                self.segnale("VolumeAdded", VOLUME, volume_struct(v))
-                self.segnale("MountAdded", MOUNT, mount_struct(v))
+        for v in nuovi:
+            self.segnale("VolumeAdded", VOLUME, volume_struct(v))
+            self.segnale("MountAdded", MOUNT, mount_struct(v))
+        if tolti or nuovi:
+            registro(f"annunciati ({perche}): " + ", ".join([f"-{v['nome']}" for v in tolti] + [f"+{v['nome']}" for v in nuovi]))
+        return bool(tolti or nuovi)
 
-    def chiamata(self, _conn, _mittente, _percorso, _interfaccia, metodo, args, invocazione):
+    def chiamata(self, _conn, mittente, _percorso, _interfaccia, metodo, args, invocazione):
         if metodo == "IsSupported":
+            registro(f"IsSupported da {mittente}")
             invocazione.return_value(GLib.Variant("(b)", (True,)))
         elif metodo == "List":
+            registro(f"elenco chiesto da {mittente}: {len(self.volumi)} volumi")
             invocazione.return_value(GLib.Variant(f"(a{DRIVE}a{VOLUME}a{MOUNT})", (
                 [drive_struct(d) for d in self.dischi.values()],
                 [volume_struct(v) for v in self.volumi], [mount_struct(v) for v in self.volumi])))

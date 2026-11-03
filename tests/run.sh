@@ -1668,6 +1668,31 @@ PY
 file:///media/usb/EMUELEC file:///media/usb/Scheda%20SD%202 file:///media/usb/DATI" "$out"
 }
 
+test_usb_volumi_avviso_perso() { # disco già collegato all'accensione (3 novembre): l'elenco scritto mentre il
+  # monitor partiva non arrivava mai a Esplora file e scrivania; il controllo periodico lo annuncia, una volta
+  python3 -c "import gi; gi.require_version('Gio', '2.0'); from gi.repository import Gio" 2>/dev/null || return 0
+  local tmp="$HOME/tmpvolp" out
+  mkdir -p "$tmp/tod-usb" "$tmp/.local/state/tod"
+  out=$(TMPDIR="$tmp" TOD_TERMUX_HOME="$tmp" python3 - "$ROOT/share/usb/tod-volumi.py" "$tmp/tod-usb/volumi" <<'PY'
+import importlib.util as u, sys
+s = u.spec_from_file_location("v", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+class Conn:
+    segnali = []
+    def register_object(self, *a): return 1
+    def emit_signal(self, dest, path, iface, nome, params): self.segnali.append(f"{nome}:{params.unpack()[1]}")
+c = Conn(); mon = m.Monitor(c)
+print(len(mon.volumi), mon.aggiorna("controllo"))
+open(sys.argv[2], "w").write("EMUELEC\tsda\tScheda SD\tUSB Storage\t805306368\tvfat\tEMUELEC\t1510-0052\n")
+print(mon.aggiorna("controllo"), " ".join(c.segnali))
+print(mon.aggiorna("controllo"), len(c.segnali))
+PY
+)
+  eq "avviso perso: annunciato dal controllo, una volta sola" "0 False
+True DriveConnected:tod-drive-emuelec VolumeAdded:tod-volume-emuelec MountAdded:tod-mount-emuelec
+False 3" "$out"
+  has "il registro dei dischi dice cosa è stato annunciato" "annunciati (controllo): +EMUELEC" "$(cat "$tmp/.local/state/tod/usb.log" 2>/dev/null)"
+}
+
 test_usb_non_dischi() { # un errore nel chiedere al dispositivo non deve farlo ignorare per sempre
   local bin="$HOME/binnd" run="$HOME/runnd" out
   mkdir -p "$bin" "$run"
