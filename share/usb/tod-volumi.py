@@ -68,6 +68,7 @@ XML = f"""<node><interface name='org.gtk.Private.RemoteVolumeMonitor'>
 <signal name='MountAdded'><arg type='s'/><arg type='s'/><arg type='{MOUNT}'/></signal>
 <signal name='MountRemoved'><arg type='s'/><arg type='s'/><arg type='{MOUNT}'/></signal>
 <signal name='MountChanged'><arg type='s'/><arg type='s'/><arg type='{MOUNT}'/></signal>
+<method name='TodRicarica'><arg type='b' direction='out'/></method>
 </interface></node>"""
 
 ICONE = {   # icona, icona simbolica (GThemedIcon con alternative: non tutti i temi hanno la prima)
@@ -193,6 +194,9 @@ class Monitor:
             invocazione.return_value(GLib.Variant(f"(a{DRIVE}a{VOLUME}a{MOUNT})", (
                 [drive_struct(d) for d in self.dischi.values()],
                 [volume_struct(v) for v in self.volumi], [mount_struct(v) for v in self.volumi])))
+        elif metodo == "TodRicarica":   # da tod-usb, appena scritto l'elenco: a volte inotify non avvisa
+            # (3 novembre, disco già collegato all'accensione), e la finestra del disco nuovo si apriva prima
+            invocazione.return_value(GLib.Variant("(b)", (self.aggiorna("tod-usb"),)))
         elif metodo == "CancelOperation":
             invocazione.return_value(GLib.Variant("(b)", (False,)))
         elif metodo == "DriveEject":   # tasto di espulsione: tutte le partizioni del disco

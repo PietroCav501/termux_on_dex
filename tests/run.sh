@@ -1685,12 +1685,21 @@ print(len(mon.volumi), mon.aggiorna("controllo"))
 open(sys.argv[2], "w").write("EMUELEC\tsda\tScheda SD\tUSB Storage\t805306368\tvfat\tEMUELEC\t1510-0052\n")
 print(mon.aggiorna("controllo"), " ".join(c.segnali))
 print(mon.aggiorna("controllo"), len(c.segnali))
+class Risposta:
+    def return_value(self, v): print("TodRicarica", v.unpack()[0], len(c.segnali))
+open(sys.argv[2], "a").write("DATI\tsdb\tChiavetta USB\tFlash\t1\texfat\tDATI\tAB-CD\n")
+mon.chiamata(None, ":1.5", None, None, "TodRicarica", None, Risposta())
 PY
 )
-  eq "avviso perso: annunciato dal controllo, una volta sola" "0 False
+  eq "avviso perso: annunciato dal controllo, una volta sola; tod-usb lo fa rileggere subito" "0 False
 True DriveConnected:tod-drive-emuelec VolumeAdded:tod-volume-emuelec MountAdded:tod-mount-emuelec
-False 3" "$out"
+False 3
+TodRicarica True 6" "$out"
   has "il registro dei dischi dice cosa è stato annunciato" "annunciati (controllo): +EMUELEC" "$(cat "$tmp/.local/state/tod/usb.log" 2>/dev/null)"
+  local g
+  g=$(sed -n '/^giro() {/,/^}/p' "$ROOT/share/usb/tod-usb")
+  eq "il giro avvisa il monitor prima di aprire le finestre dei dischi nuovi" "avvisa_monitor voci" \
+    "$(grep -o -E 'avvisa_monitor|^  voci' <<<"$g" | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')"
 }
 
 test_usb_non_dischi() { # un errore nel chiedere al dispositivo non deve farlo ignorare per sempre
@@ -3646,6 +3655,31 @@ print(",".join(n["key"] for n in m.fresh(b[1:], seen)), len(seen))
   )
   eq "solo le notifiche nuove" "k1,k3
  3" "$py"
+}
+
+test_session_old_daemons() { # "Esci" e subito l'icona (3 novembre): i demoni delle accensioni di prima restavano
+  # vivi (tre del telefono, tre tod-open-host, tre ponti): l'hook li chiude, per argomenti esatti
+  local p="$HOME/procfinto" out
+  mkdir -p "$p"/{101,102,103,104,105,106}
+  printf '%s\0' python3 "$TOD_ROOT/share/tod-phone-status.py" demone >"$p/101/cmdline"
+  printf '%s\0' bash "$TOD_ROOT/share/tod-open-host" >"$p/102/cmdline"
+  printf '%s\0' python3 /altrove/share/tod-phone-status.py demone >"$p/103/cmdline"      # un'altra copia: no
+  printf '%s\0' nano "$TOD_ROOT/share/tod-open-host" x >"$p/104/cmdline"                 # un testo uguale: no
+  printf '%s\0' python3 "$TOD_ROOT/share/tod-updates.py" controlla --ciclo >"$p/105/cmdline"
+  printf '%s\0' bash "$TOD_ROOT/tools/termux-bridge" >"$p/106/cmdline"
+  out=$(kill() { echo "$2"; }; TOD_PROC=$p session_old_daemons | tr '\n' ' ')
+  eq "chiusi solo i demoni di tod" "101 102 105 106 " "$out"
+  eq "nei test, senza /proc finto, nessun processo vero" "" "$(kill() { echo "$2"; }; session_old_daemons)"
+  has "l'hook li chiude per primi" "session_old_daemons" "$(sed -n '/^session_hook() {/,/^}/p' "$ROOT/lib/session.sh" | sed -n 2,3p)"
+  # il demone del telefono, da sé: tutti gli altri demoni, non solo quello del file pid
+  mkdir -p "$p/201" "$p/202"
+  printf '%s\0' python3 "$TOD_ROOT/share/tod-phone-status.py" demone >"$p/201/cmdline"
+  printf '%s\0' python3 "$TOD_ROOT/share/tod-phone-status.py" batteria >"$p/202/cmdline"
+  out=$(cd "$ROOT/share" && python3 -c '
+import importlib.util as u, sys
+s = u.spec_from_file_location("ps", "tod-phone-status.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(m.altri_demoni(sys.argv[1]))' "$p")
+  eq "demoni del telefono da chiudere" "[101, 103, 201]" "$out"
 }
 
 test_lingua_code_and_env() {

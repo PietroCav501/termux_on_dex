@@ -340,8 +340,38 @@ session_log_watch() { # ogni 5 minuti session_log_cap, finché c'è il server X;
   ) </dev/null >/dev/null 2>&1 &
 }
 
+session_old_daemons() { # i demoni di sessione delle accensioni di prima, chiusi prima di avviare i nuovi.
+  # Da soli si chiudono quando il server X manca da un po', ma con "Esci" e subito l'icona della Termux:X11
+  # il socket X0 torna prima (3 novembre: tre demoni del telefono con le chiamate a Termux:API triplicate,
+  # tre tod-open-host, tre ponti, due controlli degli aggiornamenti). Per argomenti esatti, come orfani()
+  # di tod-usb: mai un testo che può stare nel comando di qualcun altro. TOD_PROC: per i test
+  local proc=${TOD_PROC:-/proc} f pid coda IFS=' '
+  local -a argv
+  # nei test, mai i processi veri (12 ottobre: un test ha chiuso il desktop di Pietro)
+  if [[ -n ${TOD_TEST_RUN:-} && -z ${TOD_PROC:-} ]]; then return 0; fi
+  local -A demoni=(
+    ["$TOD_ROOT/share/tod-phone-status.py demone"]=1
+    ["$TOD_ROOT/share/tod-open-host"]=1
+    ["$TOD_ROOT/share/tod-updates.py controlla --ciclo"]=1
+    ["$TOD_ROOT/tools/termux-bridge"]=1
+  )
+  for f in "$proc"/[0-9]*/cmdline; do
+    pid=${f%/cmdline}
+    pid=${pid##*/}
+    if [[ $pid == "$$" || $pid == "$BASHPID" ]]; then continue; fi
+    mapfile -d '' -t argv 2>/dev/null <"$f" || continue
+    if ((${#argv[@]} < 2)); then continue; fi
+    coda="${argv[*]:1}"
+    if [[ -n ${demoni[$coda]:-} ]]; then
+      log "sessione: chiudo ${coda##*/} rimasto da prima (pid $pid)"
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
 session_hook() { # autostart dentro il desktop: DPI per lo schermo attuale, env del container
   local t0=$SECONDS
+  session_old_daemons || true
   display_tune || true
   # barra, Start e pannelli per primi, appena si conoscono i DPI (le loro proporzioni): il resto dopo.
   # Prima partivano dopo aspetto e cartelle, e sul S20+ il desktop restava a lungo senza barra

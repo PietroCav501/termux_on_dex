@@ -105,20 +105,43 @@ def show(n):
     threading.Thread(target=wait, daemon=True).start()
 
 
-def x_alive():
+def x_id():
+    """Quale server X: l'inode del suo socket, nuovo a ogni accensione del desktop (None: nessuno)."""
     d = os.environ.get("DISPLAY", ":0").split(":")[-1].split(".")[0] or "0"
-    return any(os.path.exists(os.path.join(p, f"X{d}")) for p in (os.path.join(TMP, ".X11-unix"), "/tmp/.X11-unix"))
+    for p in (os.path.join(TMP, ".X11-unix"), "/tmp/.X11-unix"):
+        try:
+            return os.stat(os.path.join(p, f"X{d}")).st_ino
+        except OSError:
+            pass
+    return None
+
+
+def altri_demoni(proc="/proc"):
+    """I pid degli altri demoni vivi (python3 …/tod-phone-status.py demone)."""
+    io, trovati = os.getpid(), []
+    for d in os.listdir(proc):
+        if not d.isdigit() or int(d) == io:
+            continue
+        try:
+            with open(os.path.join(proc, d, "cmdline"), "rb") as f:
+                a = f.read().split(b"\0")
+        except OSError:
+            continue
+        if len(a) > 2 and os.path.basename(a[1]) == b"tod-phone-status.py" and a[2] == b"demone":
+            trovati.append(int(d))
+    return sorted(trovati)
 
 
 def daemon():
-    # uno per sessione: quello di una sessione precedente (vecchio D-Bus, notifiche perse) si chiude
-    try:
-        old = int(open(PIDFILE).read())
-        if old != os.getpid() and "tod-phone-status" in open(f"/proc/{old}/cmdline").read():
+    # uno solo: quelli delle accensioni di prima (vecchio D-Bus, notifiche perse, letture di Termux:API
+    # doppie) si chiudono tutti, non solo quello del file pid (3 novembre: tre insieme)
+    for old in altri_demoni():
+        try:
             os.kill(old, signal.SIGTERM)
-    except (OSError, ValueError):
-        pass
+        except OSError:
+            pass
     open(PIDFILE, "w").write(str(os.getpid()))
+    mio_x = x_id()
     state, n, gone, seen = {}, 0, 0, None
     while True:
         if not os.path.exists(NOTIFY_OFF):
@@ -144,12 +167,20 @@ def daemon():
             with open(tmp, "w") as f:
                 json.dump(state, f)
             os.replace(tmp, STATE)
-            gone = 0 if x_alive() else gone + 1
+            ora_x = x_id()
+            if mio_x is None:
+                mio_x = ora_x
+            if ora_x is not None and ora_x != mio_x:   # un desktop nuovo ("Esci" e subito l'icona): ha il suo demone
+                break
+            gone = 0 if ora_x is not None else gone + 1
             if gone >= 3:   # sessione grafica finita
                 break
         n += 1
         time.sleep(TICK)
     try:
+        with open(PIDFILE) as f:   # il file è del demone nuovo, se c'è già
+            if f.read().strip() != str(os.getpid()):
+                return 0
         os.unlink(PIDFILE)
     except OSError:
         pass

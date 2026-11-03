@@ -236,6 +236,14 @@ voci() { # VOLS: le partizioni sono già cartelle in /media/usb (tod-fs.so) e Es
   done
 }
 
+avvisa_monitor() { # il monitor dei volumi (tod-volumi.py) rilegge l'elenco adesso, prima che si apra la finestra
+  # del disco nuovo: l'avviso di inotify a volte non gli arriva (3 novembre, scheda collegata all'accensione:
+  # finestra aperta, disco annunciato a Esplora file solo 2 s dopo dal controllo periodico)
+  command -v gdbus >/dev/null || return 0
+  timeout 5 gdbus call --session --dest org.gtk.vfs.TodVolumeMonitor --object-path /org/gtk/Private/RemoteVolumeMonitor \
+    --method org.gtk.Private.RemoteVolumeMonitor.TodRicarica >/dev/null 2>&1 || true
+}
+
 giro() { # DEVS: un giro del servizio
   local devs=$1 f id dev vols nuovo
   for f in "$RUN"/lkl-dev-*; do   # finiti: espulsi (restano fuori), scollegati, scheda cambiata (si riapre)
@@ -251,7 +259,8 @@ giro() { # DEVS: un giro del servizio
   for nuovo in $(usb_nuovi "$devs"); do ids+=("$(lkl_collega "$nuovo")"); done
   if ((${#ids[@]})); then lkl_aspetta "${ids[@]}"; fi
   cat "$RUN"/lkl-*.volumi 2>/dev/null >"$RUN/volumi.nuovo"
-  cmp -s "$RUN/volumi.nuovo" "$RUN/volumi" && rm -f "$RUN/volumi.nuovo" || mv -f "$RUN/volumi.nuovo" "$RUN/volumi"
+  if cmp -s "$RUN/volumi.nuovo" "$RUN/volumi"; then rm -f "$RUN/volumi.nuovo"
+  else mv -f "$RUN/volumi.nuovo" "$RUN/volumi"; avvisa_monitor; fi
   touch "$RUN/volumi"   # per giro_serve: le partizioni lette fin qui
   vols=$(cut -f1 "$RUN/volumi" 2>/dev/null)
   voci "$vols"
