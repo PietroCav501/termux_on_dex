@@ -3683,6 +3683,13 @@ print(m.altri_demoni(sys.argv[1]))' "$p")
   eq "demoni del telefono da chiudere" "[101, 103, 201]" "$out"
 }
 
+test_session_shell() { # sessione avviata da Termux in sottofondo (icona della Termux:X11): niente SHELL, e il
+  # terminale del desktop mostrava il benvenuto di Termux (login). La sessione ha sempre bash
+  eq "senza SHELL: bash" "$PREFIX/bin/bash" "$(unset SHELL; session_user_env; echo "$SHELL")"
+  eq "SHELL=login di Termux: bash" "$PREFIX/bin/bash" "$(SHELL=$PREFIX/bin/login; session_user_env; echo "$SHELL")"
+  eq "una shell scelta resta" "/x/zsh" "$(SHELL=/x/zsh; session_user_env; echo "$SHELL")"
+}
+
 test_termux_exit() { # Spegni chiude anche Termux (4 novembre), "Esci" e tod restart no
   local b="$HOME/binam" out
   mkdir -p "$b"

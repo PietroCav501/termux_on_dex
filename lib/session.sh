@@ -227,6 +227,10 @@ session_start() {
 
 session_user_env() { # la sessione grafica gira come l'utente scelto, nella sua home
   local u uh
+  # la shell dei terminali del desktop: dall'icona della Termux:X11 (TodAvvio) la sessione la avvia Termux in
+  # sottofondo, senza SHELL, e xfce4-terminal ripiegava sulla shell di sistema di Termux, login: il benvenuto
+  # di Termux nel terminale di Linux (4 novembre)
+  if [[ -z ${SHELL:-} || ${SHELL##*/} == login ]]; then export SHELL=$PREFIX/bin/bash; fi
   u=$(conf_get USER_NAME)
   export TOD_TERMUX_HOME=${TOD_TERMUX_HOME:-$HOME}
   uh=$(files_user_home) || return 0
