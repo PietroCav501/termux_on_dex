@@ -1307,10 +1307,11 @@ test_spegni_subito() { # "tod spegni --subito" (dalla finestrella dello spegnime
   local DISPLAY=:9
   # tod spegni lancia in sottofondo (&): si aspetta prima di leggere, sennò è una gara
   tod_main spegni --subito; wait
-  has "--subito: servizi e desktop" "tod stop" "$(cat "$WORK/spegni_$$")"
+  # servizi e desktop, poi anche Termux (_spegni = session_stop + termux_exit, 4 novembre)
+  has "--subito: servizi, desktop e Termux" "tod _spegni" "$(cat "$WORK/spegni_$$")"
   : >"$WORK/spegni_$$"
   TOD_SPEGNIMENTO=1 tod_main spegni; wait
-  has "lanciato dalla finestrella: mai di nuovo la finestrella" "tod stop" "$(cat "$WORK/spegni_$$")"
+  has "lanciato dalla finestrella: mai di nuovo la finestrella" "tod _spegni" "$(cat "$WORK/spegni_$$")"
   : >"$WORK/spegni_$$"
   tod_main spegni; wait
   has "dal desktop: prima le app" "tod-spegni.py" "$(cat "$WORK/spegni_$$")"
@@ -3680,6 +3681,24 @@ import importlib.util as u, sys
 s = u.spec_from_file_location("ps", "tod-phone-status.py"); m = u.module_from_spec(s); s.loader.exec_module(m)
 print(m.altri_demoni(sys.argv[1]))' "$p")
   eq "demoni del telefono da chiudere" "[101, 103, 201]" "$out"
+}
+
+test_termux_exit() { # Spegni chiude anche Termux (4 novembre), "Esci" e tod restart no
+  local b="$HOME/binam" out
+  mkdir -p "$b"
+  printf '#!/bin/sh\necho "am $*" >>"%s/am.log"\n' "$b" >"$b/am"
+  chmod +x "$b/am"
+  PATH="$b:$PATH" termux_exit
+  eq "Termux:X11 e poi Termux" "am broadcast --user 0 -a com.termux.x11.ACTION_STOP -p com.termux.x11
+am startservice --user 0 -n com.termux/com.termux.app.TermuxService -a com.termux.service_stop" "$(cat "$b/am.log")"
+  rm -f "$b/am.log"
+  conf_set SPEGNI_TERMUX 0
+  PATH="$b:$PATH" termux_exit
+  eq "SPEGNI_TERMUX=0: Termux resta aperto" "" "$(cat "$b/am.log" 2>/dev/null)"
+  conf_set SPEGNI_TERMUX 1
+  has "tod spegni passa da _spegni" '"$PREFIX/bin/tod" _spegni' "$(cat "$ROOT/tod")"
+  has "_spegni: prima il desktop, poi Termux" "_spegni) session_stop; termux_exit ;;" "$(cat "$ROOT/tod")"
+  hasnt "tod stop non chiude Termux" "termux_exit" "$(sed -n '/^session_stop() {/,/^}/p' "$ROOT/lib/session.sh")"
 }
 
 test_lingua_code_and_env() {

@@ -465,6 +465,16 @@ session_preseed_inner() { # dentro dbus-run-session: le stesse cose del primo ho
   log "primo avvio preparato (tema $(xfconf-query -c xsettings -p /Net/ThemeName 2>/dev/null || echo ?))"
 }
 
+termux_exit() { # dopo lo spegnimento (tod spegni) anche Termux, come "Exit" nella sua notifica (Pietro, 4 novembre:
+  # "quando faccio Spegni non può fare anche exit da Termux?"): la Termux:X11 si chiude, poi il servizio di Termux
+  # con tutte le sue sessioni, compresa questa. L'icona della Termux:X11 riaccende tutto (TodAvvio).
+  # SPEGNI_TERMUX=0 in tod.conf: Termux resta aperto
+  if [[ $(conf_get SPEGNI_TERMUX 1) != 1 ]]; then return 0; fi
+  log "spegnimento: chiudo anche Termux"
+  am broadcast --user 0 -a com.termux.x11.ACTION_STOP -p com.termux.x11 >/dev/null 2>&1 || true
+  am startservice --user 0 -n com.termux/com.termux.app.TermuxService -a com.termux.service_stop >/dev/null 2>&1 || true
+}
+
 session_stop() {
   local p
   # dischi USB: prima i dati scritti sui dischi, poi servizio, macchina e centralino chiusi (sennò

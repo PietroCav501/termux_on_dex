@@ -36,9 +36,10 @@ tod_main() {
         setsid python3 "$TOD_ROOT/share/tod-spegni.py" >/dev/null 2>&1 </dev/null &
       else
         log "spegnimento: servizi e desktop"
-        setsid nohup "$PREFIX/bin/tod" stop >/dev/null 2>&1 </dev/null &
+        setsid nohup "$PREFIX/bin/tod" _spegni >/dev/null 2>&1 </dev/null &
       fi
       ;;
+    _spegni) session_stop; termux_exit ;;   # "Esci" e tod restart restano senza: Termux rimane aperto
     _tune) desktop_install_entries; xfce_first_run; conf_set XFCE_TUNED 2 ;;
     restart) session_stop; sleep 1; session_start ;;
     status) session_status ;;
