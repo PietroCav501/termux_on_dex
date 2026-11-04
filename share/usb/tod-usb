@@ -179,7 +179,7 @@ ferma() { # fine della sessione: servizio chiuso, dati scritti e partizioni smon
   kill "$(cat "$RUN/sorveglia.pid")" 2>/dev/null
   lkl_ferma_tutti
   orfani
-  rm -f "$RUN/sorveglia.pid" "$RUN"/vol-* "$RUN/vols" "$RUN/volumi" "$RUN/espulsi" "$RUN/dischi.pid" "$RUN"/lkl-*
+  rm -f "$RUN/sorveglia.pid" "$RUN"/vol-* "$RUN/vols" "$RUN/volumi" "$RUN/volumi.gio" "$RUN/espulsi" "$RUN/dischi.pid" "$RUN"/lkl-* "$RUN"/caldo-*
   log "servizio fermato (fine della sessione)"
 }
 
@@ -236,6 +236,28 @@ voci() { # VOLS: le partizioni sono già cartelle in /media/usb (tod-fs.so) e Es
   done
 }
 
+scalda() { # VOLS: la prima lettura della radice di ogni partizione nuova, qui. Con LKL appena partito la cartella
+  # principale della FAT32 da 28 GB di Pietro costava 9 s (4 novembre), e la pagavano Esplora file e la scrivania nel
+  # loro ciclo principale: finestra e doppio clic fermi. LKL serve una richiesta alla volta, quindi la partizione va al
+  # desktop (volumi.gio) solo dopo; le letture dopo la prima sono immediate
+  local vols=$1 name a t f tieni=""
+  [[ -f $DATA/tod-fs.so ]] || return 0
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    a=$(alias_of "$name")
+    tieni+="$a"$'\n'
+    [[ -f $RUN/caldo-$a ]] && continue
+    t=$SECONDS
+    LD_PRELOAD=$DATA/tod-fs.so timeout 60 ls -f "/media/usb/$name" >/dev/null 2>&1 || true
+    : >"$RUN/caldo-$a"
+    if ((SECONDS - t > 1)); then log "pronta $name: prima lettura in $((SECONDS - t)) s"; fi
+  done <<<"$vols"
+  for f in "$RUN"/caldo-*; do   # tolte o espulse: alla prossima volta si rilegge
+    [[ -f $f ]] || continue
+    grep -qxF -- "${f##*/caldo-}" <<<"$tieni" || rm -f "$f"
+  done
+}
+
 avvisa_monitor() { # il monitor dei volumi (tod-volumi.py) rilegge l'elenco adesso, prima che si apra la finestra
   # del disco nuovo: l'avviso di inotify a volte non gli arriva (3 novembre, scheda collegata all'accensione:
   # finestra aperta, disco annunciato a Esplora file solo 2 s dopo dal controllo periodico)
@@ -260,9 +282,15 @@ giro() { # DEVS: un giro del servizio
   if ((${#ids[@]})); then lkl_aspetta "${ids[@]}"; fi
   cat "$RUN"/lkl-*.volumi 2>/dev/null >"$RUN/volumi.nuovo"
   if cmp -s "$RUN/volumi.nuovo" "$RUN/volumi"; then rm -f "$RUN/volumi.nuovo"
-  else mv -f "$RUN/volumi.nuovo" "$RUN/volumi"; avvisa_monitor; fi
+  else mv -f "$RUN/volumi.nuovo" "$RUN/volumi"; fi
   touch "$RUN/volumi"   # per giro_serve: le partizioni lette fin qui
   vols=$(cut -f1 "$RUN/volumi" 2>/dev/null)
+  scalda "$vols"
+  # al desktop (tod-volumi.py: Esplora file, scrivania) solo dopo la prima lettura: tod-fs le vede già da volumi
+  if ! cmp -s "$RUN/volumi" "$RUN/volumi.gio"; then
+    cp -f "$RUN/volumi" "$RUN/volumi.gio.nuovo" && mv -f "$RUN/volumi.gio.nuovo" "$RUN/volumi.gio"
+    avvisa_monitor
+  fi
   voci "$vols"
 }
 
@@ -320,7 +348,8 @@ _sorveglia() { # il servizio vero (sotto il blocco): porte USB, dischi, espulsio
   echo $$ >"$RUN/sorveglia.pid"
   monitor
   orfani
-  rm -f "$RUN"/vol-* "$RUN/vols" "$RUN/espulsi" "$RUN"/lkl-*
+  rm -f "$RUN"/vol-* "$RUN/vols" "$RUN/espulsi" "$RUN"/lkl-* "$RUN"/caldo-*
+  : >"$RUN/volumi.gio"   # c'è (anche vuoto): il monitor dei volumi sa che i dischi li annuncia scalda()
   pulisci_macchina
   # per tod-run nel container: i programmi caricano tod-fs (glibc) e vedono /media/usb
   : >"$RUN/lkl-attivo"

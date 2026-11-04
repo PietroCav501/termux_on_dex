@@ -20,7 +20,10 @@ from gi.repository import Gio, GLib  # noqa: E402
 NOME_DBUS = "org.gtk.vfs.TodVolumeMonitor"
 PERCORSO = "/org/gtk/Private/RemoteVolumeMonitor"
 RUN = os.path.join(os.environ.get("TMPDIR", "/tmp"), "tod-usb")
-ELENCO = os.path.join(RUN, "volumi")
+# le partizioni da mostrare: tod-usb le scrive qui dopo la loro prima lettura (scalda(): 9 s per la radice di una
+# FAT32 grande, che bloccava Esplora file e scrivania). "volumi" è l'elenco di tod-fs, già prima
+ELENCO = os.path.join(RUN, "volumi.gio")
+ELENCO_VECCHIO = os.path.join(RUN, "volumi")   # un tod-usb di prima (senza volumi.gio) ancora acceso
 TOD_USB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tod-usb")
 # il registro dei dischi di tod-usb: D-Bus avvia il monitor con l'uscita in /dev/null
 REGISTRO = os.path.join(os.environ.get("TOD_TERMUX_HOME") or os.path.expanduser("~"), ".local/state/tod/usb.log")
@@ -91,7 +94,7 @@ def leggi():
     """Unità e volumi dall'elenco di tod-usb: {disco: drive}, [volumi]."""
     righe = []
     try:
-        with open(ELENCO) as f:
+        with open(ELENCO if os.path.exists(ELENCO) else ELENCO_VECCHIO) as f:
             for r in f.read().splitlines():
                 c = r.split("\t")
                 if len(c) >= 8 and c[0]:
@@ -151,7 +154,7 @@ class Monitor:
                               GLib.Variant(f"(ss{tipo})", (NOME_DBUS, valore[0], valore)))
 
     def cambiato(self, _mon, f, _altro, _evento):
-        if (f.get_basename() or "") == "volumi":
+        if (f.get_basename() or "") in ("volumi.gio", "volumi"):
             self.aggiorna("avviso")
 
     def controllo(self):   # anche un avviso di inotify perso si recupera entro CONTROLLO_S secondi

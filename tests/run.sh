@@ -1703,6 +1703,36 @@ TodRicarica True 6" "$out"
     "$(grep -o -E 'avvisa_monitor|^  voci' <<<"$g" | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')"
 }
 
+test_usb_scalda() { # 4 novembre: la prima lettura della radice di una FAT32 grande costava 9 s a LKL appena partito e
+  # la pagavano Esplora file e scrivania (finestra e doppio clic fermi). La fa tod-usb, una volta, prima dell'annuncio
+  local run="$HOME/runsc" data="$HOME/datasc" f g
+  mkdir -p "$run" "$data"
+  : >"$data/tod-fs.so"
+  f=$(sed -n '/^alias_of() {/,/^}/p; /^log() {/,/^}/p; /^scalda() {/,/^}/p' "$ROOT/share/usb/tod-usb")
+  RUN="$run" DATA="$data" LOG="$run/log" bash -c "$f"$'\n''scalda "$1"' _ $'Scheda SD\nEMUELEC' 2>/dev/null
+  eq "partizioni nuove: lette e segnate" "caldo-emuelec caldo-scheda-sd" "$(cd "$run" && echo caldo-*)"
+  RUN="$run" DATA="$data" LOG="$run/log" bash -c "$f"$'\n''scalda "$1"' _ "EMUELEC" 2>/dev/null
+  eq "tolta: la prossima volta si rilegge" "caldo-emuelec" "$(cd "$run" && echo caldo-*)"
+  g=$(sed -n '/^giro() {/,/^}/p' "$ROOT/share/usb/tod-usb")
+  eq "prima la lettura, poi l'annuncio al desktop" "scalda volumi.gio" "$(grep -o -E '^  scalda|volumi\.gio' <<<"$g" | sed -n '1,2p' | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')"
+  python3 -c "import gi; gi.require_version('Gio', '2.0'); from gi.repository import Gio" 2>/dev/null || return 0
+  mkdir -p "$run/tod-usb"
+  printf 'EMUELEC\tsda\tScheda SD\tUSB Storage\t1\tvfat\tEMUELEC\t1510-0052\nDATI\tsdb\tChiavetta USB\tFlash\t1\texfat\tDATI\tAB-CD\n' >"$run/tod-usb/volumi"
+  eq "senza volumi.gio (tod-usb di prima): l'elenco di tod-fs" "EMUELEC DATI" "$(TMPDIR="$run" python3 - "$ROOT/share/usb/tod-volumi.py" <<'PY'
+import importlib.util as u, sys
+s = u.spec_from_file_location("v", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(" ".join(v["nome"] for v in m.leggi()[1]))
+PY
+)"
+  head -1 "$run/tod-usb/volumi" >"$run/tod-usb/volumi.gio"
+  eq "con volumi.gio: solo le partizioni già lette" "EMUELEC" "$(TMPDIR="$run" python3 - "$ROOT/share/usb/tod-volumi.py" <<'PY'
+import importlib.util as u, sys
+s = u.spec_from_file_location("v", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)
+print(" ".join(v["nome"] for v in m.leggi()[1]))
+PY
+)"
+}
+
 test_usb_non_dischi() { # un errore nel chiedere al dispositivo non deve farlo ignorare per sempre
   local bin="$HOME/binnd" run="$HOME/runnd" out
   mkdir -p "$bin" "$run"
