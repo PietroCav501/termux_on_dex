@@ -1733,6 +1733,66 @@ PY
 )"
 }
 
+test_lkl_anticipo() { # 4 novembre: la prima apertura della Scheda SD (FAT32) costava 10 s: LKL legge le cartelle 512 byte
+  # alla volta e ogni comando USB costa ~2 ms (4277 comandi). tod-lkl legge in anticipo quando una lettura prosegue l'altra
+  local cc s="$ROOT/share/usb/lkl/tod-lkl.c"
+  has "le scritture buttano la finestra" "if (scrivi) anticipo_butta(off, len);" "$(sed -n '/^static int usb_io/,/^}/p' "$s")"
+  has "si può spegnere" 'getenv("TOD_LKL_ANTICIPO")' "$(cat "$s")"
+  cc=$(command -v clang || command -v gcc) || { echo "  (nessun compilatore: salto)"; return 0; }
+  { sed -n '/^\/\* lettura anticipata/,/^static int usb_io/{/^static int usb_io/!p}' "$s"
+    sed -n '/^static int usb_leggi/,/^}/p' "$s"; } >"$WORK/ant_$$.c"
+  cat >"$WORK/antp_$$.c" <<'C'
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static uint64_t blocchi = 2048;   /* disco finto da 1 MB */
+static uint32_t blocco = 512;
+static unsigned char disco[1 << 20];
+static uint64_t guasto = UINT64_MAX;   /* settore illeggibile */
+static int usb_io(uint64_t off, unsigned char *buf, uint64_t len, int scrivi);
+#include ANT
+static int usb_io(uint64_t off, unsigned char *buf, uint64_t len, int scrivi) {
+    if (off + len > sizeof disco) { printf("oltre la fine\n"); return -1; }
+    if (scrivi) anticipo_butta(off, len);
+    comandi++;
+    if (!scrivi && guasto * 512 >= off && guasto * 512 < off + len) return -1;
+    if (scrivi) memcpy(disco + off, buf, len); else memcpy(buf, disco + off, len);
+    return 0;
+}
+static int giusto(uint64_t s) { unsigned char b[512]; return !usb_leggi(s * 512, b, 512) && !memcmp(b, disco + s * 512, 512); }
+int main(void) {
+    int ok = 1;
+    unsigned char nuovo[512];
+    for (size_t i = 0; i < sizeof disco; i++) disco[i] = (unsigned char)(i * 7 + i / 512);
+    for (uint64_t s = 0; s < 256; s++) ok &= giusto(s);
+    printf("in fila %d %u\n", ok, comandi);
+    comandi = 0; ok = 1;
+    for (uint64_t s = 1000; s > 900; s -= 3) ok &= giusto(s);
+    printf("sparse %d %u\n", ok, comandi);
+    ok = giusto(1500) & giusto(1501);
+    memset(nuovo, 0xab, sizeof nuovo);
+    usb_io(1510 * 512, nuovo, 512, 1);
+    for (uint64_t s = 1502; s <= 1512; s++) ok &= giusto(s);
+    printf("dopo una scrittura %d\n", ok);
+    ok = 1;
+    for (uint64_t s = 2040; s < 2048; s++) ok &= giusto(s);
+    printf("fine del disco %d\n", ok);
+    guasto = 1700; ok = 1;
+    for (uint64_t s = 1650; s < 1700; s++) ok &= giusto(s);
+    printf("settore guasto dopo %d\n", ok);
+    senza_anticipo = 1; comandi = 0; ok = 1;
+    for (uint64_t s = 100; s < 164; s++) ok &= giusto(s);
+    printf("spenta %d %u\n", ok, comandi);
+    return 0;
+}
+C
+  "$cc" -O2 -Wall -Werror -DANT="\"$WORK/ant_$$.c\"" -o "$WORK/antp_$$" "$WORK/antp_$$.c"
+  eq "256 settori in fila: 3 comandi; salti, scritture, fine del disco, guasti: dati giusti" \
+    "in fila 1 3|sparse 1 34|dopo una scrittura 1|fine del disco 1|settore guasto dopo 1|spenta 1 64" \
+    "$("$WORK/antp_$$" | paste -sd'|')"
+}
+
 test_usb_non_dischi() { # un errore nel chiedere al dispositivo non deve farlo ignorare per sempre
   local bin="$HOME/binnd" run="$HOME/runnd" out
   mkdir -p "$bin" "$run"

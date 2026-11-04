@@ -237,8 +237,24 @@ static int legge_protezione(void) {   /* MODE SENSE (6): bit WP dell'intestazion
 
 #define MAX_TRASF (120 * 1024)   /* come Linux (max_sectors 240): richieste più grandi, qualche chiavetta le rifiuta */
 
+/* lettura anticipata: LKL legge le cartelle FAT un settore da 512 byte alla volta, e ogni comando SCSI
+ * costa ~2 ms qualunque sia la sua dimensione (4 novembre: prima apertura della Scheda SD, 4277 letture
+ * da 512 byte in fila, 10 s). Quando una lettura prosegue la precedente si leggono ANTICIPO byte in un
+ * colpo e le successive escono da qui. TOD_LKL_ANTICIPO=0 la spegne */
+#define ANTICIPO (64 * 1024)
+static int senza_anticipo;
+static unsigned char *ant;
+static uint64_t ant_ini, ant_len, ult_fine = UINT64_MAX;
+static unsigned comandi;   /* comandi di lettura e scrittura mandati al disco (per la traccia) */
+
+static void anticipo_butta(uint64_t off, uint64_t len) {   /* una scrittura che tocca la finestra */
+    if (ant_len && off < ant_ini + ant_len && ant_ini < off + len) ant_len = 0;
+}
+
 static int usb_io(uint64_t off, unsigned char *buf, uint64_t len, int scrivi) {
+    if (scrivi) anticipo_butta(off, len);
     while (len) {
+        comandi++;
         uint32_t n = len > MAX_TRASF ? MAX_TRASF : (uint32_t)len, nb = n / blocco;
         uint64_t lba = off / blocco;
         unsigned char c[16] = {0};
@@ -259,11 +275,51 @@ static int usb_io(uint64_t off, unsigned char *buf, uint64_t len, int scrivi) {
     return 0;
 }
 
-static int usb_leggi(uint64_t off, unsigned char *buf, uint64_t len) { return usb_io(off, buf, len, 0); }
+static int usb_leggi(uint64_t off, unsigned char *buf, uint64_t len) {
+    if (ant_len && off >= ant_ini && off + len <= ant_ini + ant_len) {
+        memcpy(buf, ant + (off - ant_ini), len);
+        ult_fine = off + len;
+        return 0;
+    }
+    int segue = off == ult_fine;
+    ult_fine = off + len;
+    uint64_t n = off < blocchi * blocco ? blocchi * blocco - off : 0;   /* mai oltre la fine del disco */
+    if (n > ANTICIPO) n = ANTICIPO;
+    if (segue && len < n && !senza_anticipo && (ant || (ant = malloc(ANTICIPO)))) {
+        ant_len = 0;
+        if (!usb_io(off, ant, n, 0)) {
+            ant_ini = off; ant_len = n;
+            memcpy(buf, ant, len);
+            return 0;
+        }   /* un settore illeggibile oltre quelli chiesti non deve far fallire la lettura */
+    }
+    return usb_io(off, buf, len, 0);
+}
 
 static int usb_capacita_op(struct lkl_disk d, unsigned long long *res) { (void)d; *res = blocchi * blocco; return 0; }
 
+/* diagnosi: se nella cartella di lavoro c'è il file "traccia", ogni richiesta del kernel finisce in
+ * traccia-ID.txt (ms dall'avvio, tipo, settore, byte, durata in ms, comandi mandati al disco: 0 = dalla
+ * lettura anticipata) */
+static FILE *traccia;
+static double ms_ora(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+static double ms_avvio;
+
+static int usb_richiesta_vera(struct lkl_disk d, struct lkl_blk_req *req);
 static int usb_richiesta(struct lkl_disk d, struct lkl_blk_req *req) {
+    if (!traccia) return usb_richiesta_vera(d, req);
+    double t = ms_ora();
+    unsigned c = comandi;
+    uint64_t tot = 0;
+    for (int i = 0; i < req->count; i++) tot += req->buf[i].iov_len;
+    int r = usb_richiesta_vera(d, req);
+    fprintf(traccia, "%.1f %c %llu %llu %.1f %u\n", t - ms_avvio, req->type == LKL_DEV_BLK_TYPE_READ ? 'R' : req->type == LKL_DEV_BLK_TYPE_WRITE ? 'W' : 'F',
+            (unsigned long long)req->sector, (unsigned long long)tot, ms_ora() - t, comandi - c);
+    fflush(traccia);
+    return r;
+}
+
+static int usb_richiesta_vera(struct lkl_disk d, struct lkl_blk_req *req) {
     (void)d;
     if (req->type == LKL_DEV_BLK_TYPE_FLUSH || req->type == LKL_DEV_BLK_TYPE_FLUSH_OUT) {
         unsigned char c[10] = {0x35};   /* SYNCHRONIZE CACHE: chi non lo conosce non ha cache da svuotare */
@@ -952,9 +1008,16 @@ int main(int argc, char **argv) {
         return 2;
     }
     char p[512];
+    percorso(p, sizeof p, "%s", "traccia");
+    if (!access(p, F_OK)) {
+        percorso(p, sizeof p, "traccia-%s.txt", ID);
+        traccia = fopen(p, "w");
+        ms_avvio = ms_ora();
+    }
     percorso(p, sizeof p, "lkl-%s.pid", ID);
     FILE *pf = fopen(p, "w"); if (pf) { fprintf(pf, "%d\n", getpid()); fclose(pf); }
 
+    senza_anticipo = getenv("TOD_LKL_ANTICIPO") && !strcmp(getenv("TOD_LKL_ANTICIPO"), "0");
     if (!immagine) {
         int r = usb_apri(atoi(argv[3]));
         if (r) { logf_("non è un disco USB utilizzabile (errore %d)", r); pulisci_file(); return 1; }
